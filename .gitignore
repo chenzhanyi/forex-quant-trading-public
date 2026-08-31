@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Data (generated, large files)
+data/forex/
+data/news/
+data/calendar/
+data/fundamentals/
+data/signal_history.jsonl
+data/signals/
+
+# Config with secrets / user settings
+config/config.local.yaml
+config/dashboard_settings.json
+
+# Output (all generated)
+output/
+
+# Hermes working directory
+.hermes/backups/
+.hermes/changelogs/
+.hermes/plans/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.worktrees/
+ForexTrading.app/
+eurusd_sentiment_analysis.json
+data/active_positions.json
+data/trade_journal.json
+analysis_result.json
+data/gold_state.json

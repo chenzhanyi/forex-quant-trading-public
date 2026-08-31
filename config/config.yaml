@@ -1,0 +1,189 @@
+# ============================================================
+# 外汇量化交易系统 — 全局配置
+# ============================================================
+# 敏感信息请填入 config.local.yaml（自动覆盖）
+# ============================================================
+
+project:
+  name: 外汇量化交易
+  symbol: EUR/USD
+  version: "0.4"
+
+# ---------- OANDA API ----------
+oanda:
+  api_key: "YOUR_OANDA_API_KEY"
+  account_id: "YOUR_ACCOUNT_ID"
+  environment: "practice"         # practice | live
+  base_url: "https://api-fxpractice.oanda.com"
+
+# ---------- MT4 远程交易中继 ----------
+mt4_relay:
+  url: "http://你的VPS公网IP:8080"       # VPS 中继服务器地址
+  enabled: false                         # 是否启用自动下单
+
+# ---------- FXCM 实盘交易 ----------
+fxcm:
+  access_token: "YOUR_FXCM_API_TOKEN"   # 在 FXCM 后台生成
+  server: "demo"                         # demo | real
+  auto_trade: false                      # 是否自动下单（false=仅信号推送）
+
+# ---------- 黄金 XAU/USD ----------
+# 策略 = EUR/USD 六条件法 (H4 200SMA + M15 EMA + 形态 + RSI30-60 + 欧美盘)
+# 回测75天(修正统计后): 112信号 / 49%胜率 / +$1179; 熔断2连SL后: 71%胜率 / +$2230
+gold:
+  enabled: false                    # 黄金模块总开关
+  symbol: "XAU/USD"
+  trend_sma: 200                    # H4 200SMA 趋势
+  sl_atr_mult: 2.5                  # 止损: H4 ATR 倍数 (和 EUR/USD 一致)
+  tp_usd: 100                       # 固定止盈美元
+  rsi:                              # RSI 关键过滤器 (回测证实去掉就亏)
+    enabled: true
+    lo: 30
+    hi: 60
+  max_open: 2                       # 同时在途单量上限
+  session_only: true                # 仅欧美盘
+  auto_trade: false                 # 是否接入MT4自动下单
+  lots: 0.01                        # 单笔手数 (0.01手=1盎司, $1波动=$1盈亏)
+  # 熔断: 同方向连续止损N次 → 暂停该方向(回测: 7-17~8-03趋势反转期6连SL, 熔断后收益翻倍)
+  fuse_enabled: true
+  fuse_max_loss_streak: 2           # 连续N次止损触发熔断
+  fuse_cooldown_hours: 48           # 熔断冷却小时
+  # 保本止损: 浮盈≥X美元后 SL 移到入场价(回测: 熔断2+保本$50 = 75%胜率 +$2425)
+  be_trigger_usd: 50                # 0=关闭
+  # 保本锁定容差: SL 锁在入场价盈利侧 N 点(黄金 0.1美元=1点, 建议2~10)
+  # 覆盖不同平台滑点/点差 — 打平结算时保留这 N 点微利
+  be_lock_buffer_points: 3
+
+# ---------- 锁利追踪（可开关, 默认关闭）----------
+# 浮盈达止盈的 trigger 比例 → 止损移到锁利位置 + 止盈翻倍
+# 回测(近90天): 固定TP40 +166pips / 追踪(锁TP80%) +198pips — 样本仅8单, 待forward验证
+trail:
+  enabled: false           # false=固定止盈(现行); true=启用锁利追踪
+  trigger: 0.70            # 浮盈达到止盈的 70% 触发
+  lock_ratio: 0.80         # 触发后止损锁在止盈的 80% (74p → +32p)
+  tp_mult: 2.0             # 触发后止盈翻倍
+
+# ---------- 网络代理 ----------
+network:
+  enabled: false                  # true=走代理, false=直连
+  http: "http://127.0.0.1:7890"
+  https: "http://127.0.0.1:7890"
+
+# ---------- 账户参数 ----------
+account:
+  balance: 100                    # USD
+  leverage: 100                   # 1:100
+  default_lots: 0.02              # 每笔固定手数 (当前账户 EURUSD 每次 0.02 手)
+
+# ---------- 策略参数（你的交易系统） ----------
+strategy:
+  max_same_dir: 3                 # 同一波段同方向最大同时持仓数, 超限信号转"趋势延续提示"
+                                  # (回测: 前3单 +474 vs 全仓 +634, 限3单性价比最高)
+  trend:
+    d1_sma_period: 50               # D1 大势 SMA
+    h4_sma_period: 200              # H4 大势 SMA（回测验证：200优于50）
+    timeframes: ["D1", "H4"]
+    slope_bars: 3                   # 用 N 根 K 线算斜率
+
+  entry:
+    fast_ema: 5                   # 入场快 EMA（替代 SMA，更平滑）
+    slow_ema: 15                  # 入场慢 EMA
+    signal_timeframes: ["M15"]   # 入场唯一定价框架（D1+H4趋势 + M15入场，不用H1）
+
+    # 横盘联动重复价位过滤 (回测90天: 44信号+383p → 29信号+330p, 胜率63%→68%)
+    # 近12根H4区间 < flat_range pips 判定为横盘;
+    # 横盘期内距已有同向持仓入场价 < dedup_pips pips 的新信号不重复开仓
+    # (2026-08 实盘: 横盘期一天6单同价位扎堆, 暴跌时全部扫止损)
+    flat_range: 40                # 横盘判定区间阈值(pips)
+    dedup_pips: 15                # 重复价位距离阈值(pips)
+
+    # RSI 过滤器 — 原本是黄金专用, 移植到 EURUSD 后经180天回测确认应关闭
+    # 关闭(默认): 8信号 88% +253pips / 开启30-60: 6信号 83% +166pips
+    rsi:
+      enabled: false              # false=无 RSI(EURUSD 原始设计)
+      lo: 30
+      hi: 60
+
+    # 斜率动量过滤（H4 200 SMA 斜率阈值）
+    # 斜率绝对值低于此值时判定为"震荡"，不释放交叉信号
+    slope_momentum: 0.0003
+
+    # 追高保护：入场价距 H4 200SMA 不超过 N×ATR
+    max_distance_from_h4_sma: 1.5
+
+    # K 线形态置信度评分
+    # 综合得分低于此阈值时不入场
+    min_pattern_score: 1.5
+
+    # ATR 波动率过滤
+    volatility_filter:
+      enabled: true
+      atr_period: 14
+      atr_lookback: 20
+      min_atr_ratio: 0.8          # 当前 ATR < 均值×0.8 → 跳过
+
+    # 黄金分割线（Fibonacci）回调位验证
+    fib:
+      enabled: true
+      swing_window: 5             # H4 级别找波段高低点的窗口
+      tolerance_atr: 1.0          # 入场价距 fib 位多少 ATR 算"接近"
+
+  # ── Claude LLM 新闻情绪分析 ──
+  # prompt 通过 stdin 传入，只需配置命令和输出格式参数
+  # 在 config.local.yaml 中按需覆盖（如指定模型: cli_args: ["-p", "--print", "--model", "sonnet"]）
+  llm:
+    cli_command: "claude-doubao"                           # Claude CLI 命令（可带完整路径）
+    cli_args: ["-p", "--dangerously-skip-permissions", "--print", "--output-format", "json"]
+                                                    # -p: 从 stdin 读取 prompt
+                                                    # 也可加: --model sonnet, --max-tokens 2000
+    news_days: 3                                    # 每次分析最近几天的新闻
+    timeout: 120                                    # CLI 超时秒数
+
+  # 经济日历联动
+  calendar:
+    friday_no_trade: false        # false=放开周五; 若置 true 则整个周五禁交易
+    data_blackout: true           # 重大数据(非农等)黑洞窗口禁开仓 — EURUSD+黄金共用
+    blackout_lead_hours: 2.0      # 数据公布前 N 小时起禁 (非农约20:30/21:30北京公布)
+    blackout_trail_min: 30        # 数据公布后 N 分钟禁
+    major_event_warning: true     # 重大事件前降低信号置信度
+    warning_hours: 24             # 提前多少小时预警
+
+  risk:
+    rr_min_ratio: 2.0
+    rr_target1: 2.0
+    rr_target2: 3.0
+    risk_per_trade: 0.02          # 单笔亏损上限 2%（超 $500 后生效）
+    stop_loss:
+      method: "widest"            # ATR / 结构 / EMA 取最宽
+      atr_multiplier: 1.5
+      atr_period: 14
+      fallback_pips: 20           # 数据缺失时的兜底止损(pips)
+
+  # ── 出场模块 ──
+  exit:
+    # 反转信号(反转形态+收盘突破该周期200SMA双重确认) + 浮盈 → 自动平仓保本出场
+    # 浮亏时反转信号只推建议不自动平(等止损自己处理)
+    reversal_auto_close: true
+    min_profit_pips: 0            # 浮盈保底阈值(pips), 0=只要有浮盈就平; 设5可防点差吞利
+    # 反转检测周期 — 回测170天: H1最优(+56p, 浮亏敞口-57p→-16p);
+    # H4双重确认90天0次触发(形同虚设); M15太灵敏收益更低
+    reversal_tf: H1
+    # 熔断: 同方向连续止损N次 → 暂停该方向(回测170天: 实盘配置+熔断2 = 82%胜率 +650p)
+    fuse_enabled: true
+    fuse_max_loss_streak: 2       # 连续N次止损触发熔断
+    fuse_cooldown_hours: 48       # 熔断冷却小时
+
+# ---------- 采集配置 ----------
+collection:
+  timeframes: ["M5", "M15", "H1", "H4", "D1"]
+  retention_days:
+    M5: 30
+    M15: 90
+    H1: 365
+    H4: 730
+    D1: 3650
+
+# ---------- 输出 ----------
+output:
+  format: "markdown"
+  signals_dir: "output/signals/"

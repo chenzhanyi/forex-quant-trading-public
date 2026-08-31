@@ -1,0 +1,28 @@
+# 外汇量化交易 — 核心依赖
+# 安装: pip install -r requirements.txt
+
+# 数据处理
+pandas>=2.0.0
+numpy>=1.24.0
+pyarrow>=12.0
+
+# Web 面板
+flask>=3.0.0
+
+# 配置
+pyyaml>=6.0
+
+# HTTP / API
+httpx>=0.24.0
+feedparser>=6.0.0
+cloudscraper>=1.2.0
+
+# HTML 解析（经济日历降级用）
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+
+# 经济数据（财经日历补充）
+akshare>=1.18.0
+
+# macOS 菜单栏（仅 macOS；Linux/Windows 跳过此依赖）
+rumps>=0.4.0

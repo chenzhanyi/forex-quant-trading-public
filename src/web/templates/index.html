@@ -1,0 +1,1206 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>外汇量化交易 · 中控面板</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, 'PingFang SC', 'Helvetica Neue', monospace;
+            background: #0d1117;
+            color: #c9d1d9;
+            padding: 20px 32px;
+        }
+        .container { max-width: 100%; margin: 0 auto; }
+        .header {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 16px 0; border-bottom: 1px solid #30363d; margin-bottom: 20px;
+        }
+        .header h1 { font-size: 24px; color: #f0f6fc; }
+        .header span { font-size: 14px; color: #8b949e; }
+
+        .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+        .grid-2 { grid-template-columns: 1fr 1fr; }
+        .grid-4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+        .card {
+            background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+            padding: 18px; position: relative;
+        }
+        .card-title {
+            font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;
+            color: #8b949e; margin-bottom: 12px;
+        }
+        .card .value { font-size: 28px; font-weight: 600; }
+        .card .label { font-size: 12px; color: #8b949e; margin-top: 4px; }
+        .signal-buy { color: #3fb950; }
+        .signal-sell { color: #f85149; }
+        .signal-wait { color: #d29922; }
+        .tag {
+            display: inline-block; padding: 2px 10px; border-radius: 12px;
+            font-size: 12px; font-weight: 500;
+        }
+        .tag-bull { background: #0d5320; color: #3fb950; }
+        .tag-bear { background: #6b1515; color: #f85149; }
+        .tag-side { background: #3d2e00; color: #d29922; }
+        .tag-wait { background: #1f3a5f; color: #58a6ff; }
+        .tag-high { background: #6b1515; color: #f85149; }
+        .tag-medium { background: #3d2e00; color: #d29922; }
+
+        .info-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #21262d; font-size: 14px; }
+        .info-row:last-child { border: none; }
+        .info-label { color: #8b949e; }
+        .info-value { font-weight: 500; }
+
+        .btn {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 8px 16px; border-radius: 6px; border: 1px solid #30363d;
+            background: #21262d; color: #c9d1d9; font-size: 13px;
+            cursor: pointer; transition: all 0.15s;
+        }
+        .btn:hover { background: #30363d; border-color: #8b949e; }
+        .btn-primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+        .btn-primary:hover { background: #388bfd; }
+        .btn-group { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+
+        .nav-tabs { display: flex; gap: 4px; margin-bottom: 16px; }
+        .nav-tab {
+            padding: 8px 18px; border-radius: 6px 6px 0 0;
+            background: #161b22; border: 1px solid #30363d; border-bottom: none;
+            color: #8b949e; cursor: pointer; font-size: 14px;
+        }
+        .nav-tab.active { background: #0d1117; color: #f0f6fc; font-weight: 600; }
+        .nav-tab:hover { color: #c9d1d9; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        .review-box {
+            background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+            padding: 18px; font-size: 13px; line-height: 1.7; white-space: pre-wrap;
+            font-family: 'Menlo', 'Monaco', monospace; max-height: 600px; overflow-y: auto;
+        }
+
+        .calendar-item {
+            padding: 8px; border-left: 3px solid #30363d; margin-bottom: 6px;
+        }
+        .calendar-item.high { border-left-color: #f85149; }
+        .calendar-item .evt-date { font-size: 12px; color: #8b949e; }
+        .calendar-item .evt-name { font-size: 14px; font-weight: 500; }
+
+        .fundamentals-box {
+            background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+            padding: 14px; font-size: 13px; line-height: 1.6; white-space: pre-wrap;
+            max-height: 300px; overflow-y: auto;
+        }
+
+        .data-status { display: flex; gap: 12px; flex-wrap: wrap; }
+        .data-status .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 4px; }
+        .dot-green { background: #3fb950; }
+        .dot-yellow { background: #d29922; }
+
+        .loading { text-align: center; padding: 40px; color: #8b949e; }
+
+        @media (max-width: 1200px) {
+            .grid { grid-template-columns: 1fr 1fr; }
+            .grid-4 { grid-template-columns: 1fr 1fr; }
+        }
+        @media (max-width: 768px) {
+            .grid, .grid-2, .grid-4 { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>📊 外汇量化交易 · 中控面板</h1>
+        <span id="updateTime">加载中...</span>
+    </div>
+
+    <!-- Tab 导航 -->
+    <div class="nav-tabs">
+        <div class="nav-tab active" onclick="switchTab('dashboard')">📊 总览</div>
+        <div class="nav-tab" onclick="switchTab('review')">📋 复盘</div>
+        <div class="nav-tab" onclick="switchTab('journal')">📝 交易日志</div>
+        <div class="nav-tab" onclick="switchTab('gold')">🥇 黄金</div>
+        <div class="nav-tab" onclick="switchTab('settings')">⚙️ 设置</div>
+    </div>
+
+    <!-- Tab: 总览 -->
+    <div id="tab-dashboard" class="tab-content active">
+
+    <!-- 第一行: 核心信息 (4列) -->
+    <div class="grid grid-4" id="signalGrid">
+        <div class="card">
+            <div class="card-title">📈 大势判断 <span id="sentimentLabel" style="font-size:12px;font-weight:400;margin-left:8px;"></span></div>
+            <div id="trendDisplay" class="value signal-wait">加载中...</div>
+            <div id="trendDetail" class="label">D1: -- | H4: --</div>
+        </div>
+        <div class="card">
+            <div class="card-title">💡 交易建议</div>
+            <div id="signalDisplay" class="value signal-wait">加载中...</div>
+            <div id="signalReason" class="label">--</div>
+        </div>
+        <div class="card">
+            <div class="card-title">🏷 可信度</div>
+            <div id="confidenceDisplay" class="value">--</div>
+            <div id="riskDisplay" class="label">R:R: -- | 止损: -- pips</div>
+        </div>
+        <div class="card">
+            <div class="card-title">📊 今日信号</div>
+            <div id="todaySignalCount" class="value">--</div>
+            <div id="todaySignalDetail" class="label">--</div>
+        </div>
+    </div>
+
+    <!-- 详细信号 (2列) -->
+    <div class="grid grid-2" id="detailGrid">
+        <div class="card">
+            <div class="card-title">📋 入场详情</div>
+            <div id="entryDetail">
+                <div class="info-row"><span class="info-label">方向</span><span id="detDirection" class="info-value">--</span></div>
+                <div class="info-row"><span class="info-label">入场</span><span id="detEntry" class="info-value">--</span></div>
+                <div class="info-row"><span class="info-label">止损</span><span id="detStop" class="info-value">--</span></div>
+                <div class="info-row"><span class="info-label">TP1</span><span id="detTp1" class="info-value">--</span></div>
+                <div class="info-row"><span class="info-label">TP2</span><span id="detTp2" class="info-value">--</span></div>
+                <div class="info-row"><span class="info-label">仓位</span><span id="detLots" class="info-value">--</span></div>
+                <div class="info-row"><span class="info-label">最大亏损</span><span id="detLoss" class="info-value">--</span></div>
+            </div>
+            <div id="skipReason" style="color:#d29922;font-size:13px;margin-top:8px;display:none;"></div>
+        </div>
+        <div class="card">
+            <div class="card-title">🎯 快速操作</div>
+            <div class="btn-group">
+                <button class="btn btn-primary" onclick="refreshData()">🔄 刷新数据</button>
+                <button class="btn" onclick="refreshSignal()">📊 生成信号</button>
+            </div>
+            <div style="margin-top:16px;">
+                <div class="card-title">📦 数据状态</div>
+                <div id="dataStatus" class="data-status">
+                    <span><span class="dot dot-green"></span>行情</span>
+                    <span><span class="dot dot-yellow"></span>日历</span>
+                    <span><span class="dot dot-yellow"></span>新闻</span>
+                    <span><span class="dot dot-green"></span>基本面</span>
+                </div>
+            </div>
+            <div style="margin-top:16px;">
+                <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
+                    <span>⚙️ AI 分析设置</span>
+                    <button class="btn" onclick="toggleLLMSettings()" style="font-size:11px;padding:2px 8px;">展开</button>
+                </div>
+                <div id="llmSettingsPanel" style="display:none;margin-top:8px;">
+                    <div style="font-size:12px;color:#8b949e;margin-bottom:4px;">CLI 命令</div>
+                    <input id="llmCliCommand" type="text" value="" style="width:100%;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;padding:4px 8px;border-radius:4px;font-size:12px;" />
+                    <div style="font-size:12px;color:#8b949e;margin-top:8px;margin-bottom:4px;">参数（用逗号分隔）</div>
+                    <input id="llmCliArgs" type="text" value="" style="width:100%;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;padding:4px 8px;border-radius:4px;font-size:12px;" />
+                    <div style="margin-top:8px;">
+                        <button class="btn btn-primary" onclick="saveLLMSettings()" style="font-size:12px;padding:3px 12px;">💾 保存</button>
+                        <span id="llmSettingsMsg" style="font-size:11px;margin-left:8px;"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 基本面 -->
+    <div class="card" style="margin-bottom:16px;">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
+            <span>📰 基本面摘要（近 7 天）</span>
+            <span>
+                <span id="llmStatus" style="font-size:12px;color:#8b949e;margin-right:8px;"></span>
+                <button class="btn" id="btnLLM" onclick="runLLMAnalysis()" style="font-size:11px;padding:4px 10px;">🤖 AI 分析</button>
+            </span>
+        </div>
+        <div id="fundamentalsBox" class="fundamentals-box">加载中...</div>
+    </div>
+
+    <!-- 经济日历 -->
+    <div class="card">
+        <div class="card-title">📅 经济日历 <span id="calCount" style="font-weight:400;font-size:12px;"></span></div>
+        <div id="calendarBox" style="max-height:300px;overflow-y:auto;">加载中...</div>
+    </div>
+</div>  <!-- end tab-dashboard -->
+
+<!-- Tab: 复盘 -->
+<div id="tab-review" class="tab-content">
+    <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
+            <span>📋 复盘报告（近 7 天）</span>
+            <button class="btn" onclick="loadReview()">🔄 刷新</button>
+        </div>
+        <div id="reviewBox" class="review-box">点击"刷新"加载复盘报告</div>
+    </div>
+</div>
+
+
+<!-- Tab: 设置 -->
+<div id="tab-settings" class="tab-content">
+    <div class="card">
+        <div class="card-title">⚙️ MT4 远程交易设置</div>
+        <div style="margin:12px 0;">
+            <label style="color:#c9d1d9;font-size:13px;">中继服务器地址</label>
+            <div style="display:flex;gap:8px;margin-top:4px;">
+                <input id="mt4Url" placeholder="http://你的VPS:8080" style="flex:1;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px;font-size:13px;">
+                <button class="btn" onclick="saveMt4()">💾 保存</button>
+                <button class="btn" onclick="testMt4()">🔍 测试</button>
+            </div>
+        </div>
+        <div style="margin:12px 0;">
+            <label style="color:#c9d1d9;font-size:13px;">自动下单</label>
+            <select id="mt4Enabled" onchange="saveMt4()" style="margin-top:4px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px;font-size:13px;width:100%;">
+                <option value="false">❌ 关闭 (仅信号推送)</option>
+                <option value="true">✅ 开启 (信号触发→自动下单)</option>
+            </select>
+        </div>
+        <div id="mt4TestResult" style="margin-top:8px;font-size:13px;"></div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">🎯 EURUSD 每次交易手数</div>
+        <div style="margin:12px 0;">
+            <label style="color:#c9d1d9;font-size:13px;">每笔固定手数 <span style="color:#8b949e;">(default_lots → 信号仓位/MT4下单)</span></label>
+            <div style="display:flex;gap:8px;margin-top:4px;">
+                <input id="tradeLots" type="number" step="0.01" min="0.01" value="0.02" style="flex:1;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px;font-size:13px;">
+                <button class="btn" onclick="saveTrade()">💾 保存</button>
+            </div>
+            <div id="tradeResult" style="margin-top:6px;font-size:13px;color:#8b949e;"></div>
+        </div>
+        <div style="margin:12px 0;">
+            <label style="color:#c9d1d9;font-size:13px;">同方向最大同时持仓数 <span style="color:#8b949e;">(超限信号自动转"趋势延续提示")</span></label>
+            <div style="display:flex;gap:8px;margin-top:4px;">
+                <input id="tradeMaxSameDir" type="number" step="1" min="1" max="20" value="3" style="flex:1;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px;font-size:13px;">
+                <button class="btn" onclick="saveTrade()">💾 保存</button>
+            </div>
+        </div>
+        <div style="margin:12px 0;">
+            <label style="color:#c9d1d9;font-size:13px;">熔断 <span style="color:#8b949e;">(同方向连续止损N次 → 暂停该方向; 回测: 82%胜率)</span></label>
+            <div style="display:flex;gap:8px;align-items:center;margin-top:4px;">
+                <span style="font-size:13px;color:#8b949e;">连续</span>
+                <input id="tradeFuseStreak" type="number" step="1" min="0" max="10" value="2" style="width:64px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px;font-size:13px;" title="0=关闭熔断">
+                <span style="font-size:13px;color:#8b949e;">次止损 → 暂停</span>
+                <input id="tradeFuseHours" type="number" step="1" min="1" max="168" value="48" style="width:64px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px;font-size:13px;">
+                <span style="font-size:13px;color:#8b949e;">小时</span>
+                <button class="btn" onclick="saveFuse()">💾 保存</button>
+            </div>
+            <div id="tradeFuseResult" style="margin-top:6px;font-size:13px;color:#8b949e;"></div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">🔒 锁利追踪 <span style="color:#8b949e;font-size:12px;">(浮盈达触发% → 锁TP×锁比 → TP翻倍)</span></div>
+        <div style="margin:12px 0;">
+            <label style="color:#c9d1d9;font-size:13px;">启用锁利追踪</label>
+            <select id="trailEnabled" onchange="saveTrail()" style="display:block;width:100%;margin-top:4px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px;font-size:13px;">
+                <option value="false">❌ 关闭 (固定止盈, 现行)</option>
+                <option value="true">✅ 开启</option>
+            </select>
+        </div>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;margin:12px 0;">
+            <div>
+                <label style="color:#c9d1d9;font-size:13px;">触发(浮盈≥)</label>
+                <input id="trailTrigger" type="number" step="0.05" min="0.1" max="1.0" value="0.70" onchange="saveTrail()" style="display:block;margin-top:4px;width:74px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px;font-size:13px;">
+            </div>
+            <div>
+                <label style="color:#c9d1d9;font-size:13px;">止损锁在 TP×</label>
+                <input id="trailLock" type="number" step="0.05" min="0.1" max="1.0" value="0.80" onchange="saveTrail()" style="display:block;margin-top:4px;width:74px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px;font-size:13px;">
+            </div>
+            <div>
+                <label style="color:#c9d1d9;font-size:13px;">TP 翻倍 ×</label>
+                <input id="trailMult" type="number" step="0.1" min="1.0" value="2.0" onchange="saveTrail()" style="display:block;margin-top:4px;width:74px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px;font-size:13px;">
+            </div>
+        </div>
+        <div id="trailResult" style="font-size:13px;color:#8b949e;"></div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">🚪 反转自动平仓 <span style="color:#8b949e;font-size:12px;">(反转信号+浮盈 → 保本出场; 回测170天: H1最优)</span></div>
+        <div style="margin:12px 0;">
+            <label style="color:#c9d1d9;font-size:13px;">启用反转自动平仓</label>
+            <select id="exitRevEnabled" onchange="saveExitRev()" style="display:block;width:100%;margin-top:4px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px;font-size:13px;">
+                <option value="true">✅ 开启 (反转信号+浮盈 → 自动平仓保本)</option>
+                <option value="false">❌ 关闭 (反转信号只推建议不自动平)</option>
+            </select>
+        </div>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;margin:12px 0;">
+            <div>
+                <label style="color:#c9d1d9;font-size:13px;">浮盈保底(pips)</label>
+                <input id="exitRevMinProfit" type="number" step="1" min="0" max="50" value="0" onchange="saveExitRev()" style="display:block;margin-top:4px;width:74px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px;font-size:13px;">
+            </div>
+            <div>
+                <label style="color:#c9d1d9;font-size:13px;">检测周期</label>
+                <select id="exitRevTf" onchange="saveExitRev()" style="display:block;margin-top:4px;width:90px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px;font-size:13px;">
+                    <option value="H1">H1 (推荐)</option>
+                    <option value="H4">H4 (保守)</option>
+                    <option value="M15">M15 (灵敏)</option>
+                </select>
+            </div>
+        </div>
+        <div id="exitRevResult" style="font-size:13px;color:#8b949e;"></div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">📉 EURUSD RSI 过滤器 <span style="color:#8b949e;font-size:12px;">(默认关闭=EURUSD原始设计)</span></div>
+        <div style="margin:12px 0;">
+            <label style="color:#c9d1d9;font-size:13px;">启用 RSI(30-60) 过滤</label>
+            <select id="eurRsiEnabled" onchange="saveEurRsi()" style="display:block;width:100%;margin-top:4px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px;font-size:13px;">
+                <option value="false">❌ 关闭 (无 RSI, 180天回测 8单88% +253pips)</option>
+                <option value="true">✅ 开启 RSI 窗口过滤</option>
+            </select>
+        </div>
+        <div style="display:flex;gap:14px;margin:12px 0;">
+            <div>
+                <label style="color:#c9d1d9;font-size:13px;">RSI 下限</label>
+                <input id="eurRsiLo" type="number" step="1" min="0" max="100" value="30" onchange="saveEurRsi()" style="display:block;margin-top:4px;width:74px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px;font-size:13px;">
+            </div>
+            <div>
+                <label style="color:#c9d1d9;font-size:13px;">RSI 上限</label>
+                <input id="eurRsiHi" type="number" step="1" min="0" max="100" value="60" onchange="saveEurRsi()" style="display:block;margin-top:4px;width:74px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px;font-size:13px;">
+            </div>
+        </div>
+        <div id="eurRsiResult" style="font-size:13px;color:#8b949e;"></div>
+    </div>
+</div>
+
+
+<!-- Tab: 黄金 -->
+<div id="tab-gold" class="tab-content">
+    <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
+            <span>🥇 黄金 XAU/USD</span>
+            <button class="btn" onclick="loadGold()">🔄 刷新</button>
+        </div>
+        <div id="goldStatus" style="font-size:14px;line-height:1.8;">加载中...</div>
+        <div style="margin-top:12px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
+            <label style="font-size:13px;color:#c9d1d9;">启用黄金:</label>
+            <select id="goldEnabled" onchange="saveGold()" style="background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:6px 10px;">
+                <option value="false">❌ 关闭</option>
+                <option value="true">✅ 开启</option>
+            </select>
+            <label style="font-size:13px;color:#c9d1d9;margin-left:8px;">在途上限:</label>
+            <input id="goldMaxOpen" type="number" min="1" max="20" value="2" onchange="saveGold()" style="width:60px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:6px 10px;">
+            <label style="font-size:13px;color:#c9d1d9;margin-left:8px;">自动下单:</label>
+            <select id="goldAutoTrade" onchange="saveGold()" style="background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:6px 10px;">
+                <option value="false">❌ 仅信号</option>
+                <option value="true">✅ MT4自动下单</option>
+            </select>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
+            <label style="font-size:13px;color:#c9d1d9;">保本止损(浮盈≥):</label>
+            <input id="goldBeTrigger" type="number" min="0" max="200" value="50" onchange="saveGold()" style="width:70px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:6px 10px;" title="0=关闭">
+            <span style="font-size:12px;color:#8b949e;">美元</span>
+            <label style="font-size:13px;color:#c9d1d9;margin-left:8px;">锁定容差:</label>
+            <input id="goldBeBuffer" type="number" min="0" max="10" value="3" onchange="saveGold()" style="width:60px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:6px 10px;" title="SL锁在入场价盈利侧N点(0.1美元=1点), 覆盖平台滑点">
+            <span style="font-size:12px;color:#8b949e;">点 (0.1美元/点)</span>
+            <label style="font-size:13px;color:#c9d1d9;margin-left:8px;">熔断:</label>
+            <input id="goldFuseStreak" type="number" min="0" max="10" value="2" onchange="saveGold()" style="width:50px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:6px 10px;" title="同方向连续N次止损后暂停48h, 0=关闭">
+            <span style="font-size:12px;color:#8b949e;">连SL熔断(0=关)</span>
+        </div>
+    </div>
+</div>
+
+</div>  <!-- end container -->
+
+<!-- Tab: 交易日志 -->
+<div id="tab-journal" class="tab-content">
+    <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
+            <span>📝 已推送交易信号</span>
+            <div style="display:flex;gap:8px;align-items:center;">
+                <select id="journalSymbol" onchange="loadJournal()" style="background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:4px 8px;font-size:12px;">
+                    <option value="">📊 全部品种</option>
+                    <option value="EUR/USD">EUR/USD 欧美</option>
+                    <option value="XAU/USD">🥇 XAU/USD 黄金</option>
+                </select>
+                <button class="btn" onclick="loadJournal()">🔄 刷新</button>
+            </div>
+        </div>
+        <div id="journalSummary" style="margin-bottom:12px;font-size:13px;color:#8b949e;"></div>
+        <div id="journalList" style="max-height:500px;overflow-y:auto;">点击"刷新"加载</div>
+    </div>
+</div>
+
+
+<script>
+/** 在指定元素显示错误提示 */
+function showError(elId, msg) {
+    const el = document.getElementById(elId);
+    if (el) {
+        el.innerHTML = '<span style="color:#f85149;font-size:14px;">⚠ ' + msg + '</span>';
+    }
+}
+
+async function fetchJSON(url, timeoutMs = 15000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const r = await fetch(url, { signal: controller.signal });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function formatTime() {
+    const now = new Date();
+    return now.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) + ' GMT+8';
+}
+
+async function loadSignal() {
+    try {
+        const res = await fetchJSON('/api/signal', 30000);
+        if (!res.success) { showError('signalDisplay', res.error || '加载失败'); return; }
+        const d = res.data;
+
+    // 大势
+    const trendEl = document.getElementById('trendDisplay');
+    trendEl.textContent = d.trend || '--';
+    trendEl.className = 'value ' + (d.can_trade ? (d.direction.includes('BUY') ? 'signal-buy' : 'signal-sell') : 'signal-wait');
+
+    document.getElementById('trendDetail').textContent = `D1: ${d.d1_direction} | H4: ${d.h4_direction}`;
+
+    // 基本面情绪
+    const sentEl = document.getElementById('sentimentLabel');
+    if (d.sentiment) {
+        const emoji = d.sentiment.label === '看多' ? '🟢' : d.sentiment.label === '偏多' ? '🟡' : d.sentiment.label === '看空' ? '🔴' : d.sentiment.label === '偏空' ? '🟠' : '⚪';
+        sentEl.textContent = `${emoji} ${d.sentiment.label} (${d.sentiment.score})`;
+        sentEl.style.display = '';
+    }
+
+    // 信号
+    const sigEl = document.getElementById('signalDisplay');
+    sigEl.textContent = d.direction || '--';
+    sigEl.className = 'value ' + (d.can_trade ? (d.direction.includes('做多') ? 'signal-buy' : 'signal-sell') : 'signal-wait');
+
+    const reasonEl = document.getElementById('signalReason');
+    reasonEl.textContent = d.can_trade ? d.reason : (d.skip_reason || '--');
+
+    // 可信度
+    const confEl = document.getElementById('confidenceDisplay');
+    confEl.textContent = d.can_trade ? '★'.repeat(d.confidence) + '☆'.repeat(5-d.confidence) : '--';
+    confEl.className = 'value ' + (d.can_trade ? 'signal-buy' : 'signal-wait');
+
+    document.getElementById('riskDisplay').textContent =
+        d.can_trade ? `R:R ${d.rr_ratio} | SL ${d.entry_price ? Math.abs((d.entry_price - d.stop_loss)*10000).toFixed(0) : '--'} pips` : '--';
+
+    // 入场详情
+    document.getElementById('detDirection').textContent = d.direction || '--';
+    document.getElementById('detDirection').className = 'info-value ' + (d.can_trade ? (d.direction.includes('做多') ? 'signal-buy' : 'signal-sell') : '');
+
+    document.getElementById('detEntry').textContent = d.entry_price ? d.entry_price.toFixed(5) : '--';
+    document.getElementById('detStop').textContent = d.stop_loss ? d.stop_loss.toFixed(5) : '--';
+    document.getElementById('detTp1').textContent = d.tp1 ? d.tp1.toFixed(5) : '--';
+    document.getElementById('detTp2').textContent = d.tp2 ? d.tp2.toFixed(5) : '--';
+    document.getElementById('detLots').textContent = d.lots ? d.lots.toFixed(4) + ' 手' : '--';
+    document.getElementById('detLoss').textContent = d.max_loss ? '$' + d.max_loss.toFixed(2) : '--';
+
+    const skipEl = document.getElementById('skipReason');
+    if (!d.can_trade && d.skip_reason) {
+        skipEl.textContent = '⏸ ' + d.skip_reason;
+        skipEl.style.display = 'block';
+    } else {
+        skipEl.style.display = 'none';
+    }
+
+    document.getElementById('updateTime').textContent = '更新: ' + formatTime();
+
+    // 今日信号计数 (北京时区当天, 不含历史)
+    try {
+        const hist = await fetchJSON('/api/history');
+        if (hist.success) {
+            const s = hist.data.summary;
+            document.getElementById('todaySignalCount').textContent = s.today_total || 0;
+            document.getElementById('todaySignalDetail').textContent =
+                (s.today_trade_signals || 0) > 0 ? `${s.today_trade_signals} 次交易信号` : '仅观望(无交易信号)';
+        }
+    } catch(e) {
+        showError('todaySignalCount', '加载失败');
+    }
+    } catch(e) {
+        if (e.name === 'AbortError') {
+            // 超时中断 — 保留上次数据，不显示吓人错误
+            console.log('信号加载超时，保留上次数据');
+        } else {
+            showError('signalDisplay', '加载信号失败: ' + e.message);
+        }
+    }
+}
+
+async function loadFundamentals() {
+    try {
+        const res = await fetchJSON('/api/fundamentals');
+        if (res.success) {
+            document.getElementById('fundamentalsBox').textContent = res.data.summary || '暂无数据';
+        } else {
+            showError('fundamentalsBox', res.error || '加载失败');
+        }
+    } catch(e) {
+        if (e.name === 'AbortError') {
+            console.log('基本面加载超时，保留上次数据');
+        } else {
+            showError('fundamentalsBox', '加载失败: ' + e.message);
+        }
+    }
+    // 同时检查 LLM 状态
+    checkLLMStatus();
+}
+
+async function checkLLMStatus() {
+    try {
+        const res = await fetchJSON('/api/llm-sentiment/status');
+        if (res.success && res.data.available) {
+            document.getElementById('llmStatus').textContent = '✅ AI 已分析';
+            document.getElementById('llmStatus').style.color = '#3fb950';
+        } else {
+            document.getElementById('llmStatus').textContent = '';
+        }
+    } catch(e) {}
+}
+
+async function runLLMAnalysis() {
+    const btn = document.getElementById('btnLLM');
+    const status = document.getElementById('llmStatus');
+    btn.disabled = true;
+    btn.textContent = '⏳ 分析中...';
+    status.textContent = '⏳ 调用 Claude...';
+    status.style.color = '#d29922';
+
+    try {
+        const res = await fetchJSON('/api/llm-sentiment', 180000);  // Claude CLI 需要 1-2 分钟
+        if (res.success && res.data) {
+            const d = res.data;
+            const label = d.label || '未知';
+            const score = (d.score != null) ? d.score : '?';
+            const reason = d.reason || '无';
+            const events = (d.key_events && d.key_events.length) ? d.key_events.join(', ') : '无';
+            const src = d.source || 'Claude CLI';
+
+            status.textContent = d.cached ? '📋 已有结果' : '✅ AI 已分析';
+            status.style.color = '#3fb950';
+
+            // 更新基本面卡片
+            const box = document.getElementById('fundamentalsBox');
+            const aiBlock = '\n\n🤖 ' + src + ':\n'
+                + '   情绪: ' + label + ' (score=' + score + ')\n'
+                + '   理由: ' + reason + '\n'
+                + '   关键事件: ' + events;
+
+            // 替换已有的 AI 结果（避免重复追加）
+            const current = box.textContent;
+            const idx = current.indexOf('\n\n🤖');
+            if (idx >= 0) {
+                box.textContent = current.substring(0, idx) + aiBlock;
+            } else {
+                box.textContent = current + aiBlock;
+            }
+        } else {
+            status.textContent = '❌ ' + (res.error || '分析失败');
+            status.style.color = '#f85149';
+        }
+    } catch(e) {
+        status.textContent = '❌ 网络错误: ' + e.message;
+        status.style.color = '#f85149';
+    }
+    btn.disabled = false;
+    btn.textContent = '🤖 AI 分析';
+}
+
+// ── LLM 设置 ──
+
+async function loadLLMSettings() {
+    try {
+        const res = await fetchJSON('/api/settings/llm');
+        if (res.success && res.data) {
+            document.getElementById('llmCliCommand').value = res.data.cli_command || '';
+            document.getElementById('llmCliArgs').value = (res.data.cli_args || []).join(', ');
+        }
+    } catch(e) {}
+}
+
+function toggleLLMSettings() {
+    const panel = document.getElementById('llmSettingsPanel');
+    const btn = panel.previousElementSibling.querySelector('button');
+    if (panel.style.display === 'none') {
+        panel.style.display = 'block';
+        btn.textContent = '收起';
+        loadLLMSettings();
+    } else {
+        panel.style.display = 'none';
+        btn.textContent = '展开';
+    }
+}
+
+async function saveLLMSettings() {
+    const msg = document.getElementById('llmSettingsMsg');
+    const cmd = document.getElementById('llmCliCommand').value.trim();
+    const args = document.getElementById('llmCliArgs').value.split(',').map(s => s.trim()).filter(s => s);
+    try {
+        const res = await fetch('/api/settings/llm', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({cli_command: cmd, cli_args: args})
+        });
+        const data = await res.json();
+        if (data.success) {
+            msg.textContent = '✅ 已保存，下次 AI 分析生效';
+            msg.style.color = '#3fb950';
+        } else {
+            msg.textContent = '❌ ' + (data.error || '保存失败');
+            msg.style.color = '#f85149';
+        }
+    } catch(e) {
+        msg.textContent = '❌ 网络错误';
+        msg.style.color = '#f85149';
+    }
+}
+
+async function loadCalendar() {
+    try {
+        const res = await fetchJSON('/api/calendar');
+        if (!res.success) { showError('calendarBox', res.error || '加载失败'); return; }
+        const d = res.data;
+    document.getElementById('calCount').textContent =
+        `(${d.eur_usd} EUR/USD · ${d.high_impact} 高影响)`;
+
+    let html = '';
+    for (const [date, events] of Object.entries(d.by_date)) {
+        html += `<div style="margin-top:8px;font-size:13px;color:#8b949e;">📅 ${date}</div>`;
+        for (const e of events) {
+            const isHigh = e.impact && e.impact.toLowerCase() === 'high';
+            html += `<div class="calendar-item ${isHigh ? 'high' : ''}">
+                <span class="tag ${isHigh ? 'tag-high' : 'tag-medium'}">${e.impact || '?'}</span>
+                <span style="font-weight:600;">${e.currency}</span>
+                <span class="evt-name">${e.event}</span>
+            </div>`;
+        }
+    }
+    document.getElementById('calendarBox').innerHTML = html || '暂无日历数据';
+    } catch(e) {
+        if (e.name === 'AbortError') {
+            console.log('日历加载超时，保留上次数据');
+        } else {
+            showError('calendarBox', '加载日历失败: ' + e.message);
+        }
+    }
+}
+
+async function loadStatus() {
+    const res = await fetchJSON('/api/status');
+    if (res.success) {
+        const d = res.data;
+        document.getElementById('dataStatus').innerHTML =
+            `<span><span class="dot dot-green"></span>行情 ${d.oanda}</span>
+             <span><span class="dot ${d.calendar.includes('0') ? 'dot-yellow' : 'dot-green'}"></span>日历 ${d.calendar}</span>
+             <span><span class="dot ${d.news.includes('0') ? 'dot-yellow' : 'dot-green'}"></span>新闻 ${d.news}</span>
+             <span><span class="dot ${d.fundamentals.includes('0') ? 'dot-yellow' : 'dot-green'}"></span>基本面 ${d.fundamentals}</span>`;
+    }
+}
+
+async function refreshData() {
+    document.getElementById('updateTime').textContent = '刷新中...';
+    const btn = event?.target;
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ 刷新中...'; }
+    try {
+        const res = await fetchJSON('/api/refresh', 60000);
+        if (res && res.success) {
+            loadAll();
+        } else {
+            document.getElementById('updateTime').textContent = '刷新失败: ' + (res?.error || '未知错误');
+        }
+    } catch (e) {
+        document.getElementById('updateTime').textContent = '刷新超时/失败: ' + e.message;
+    }
+    if (btn) { btn.disabled = false; btn.innerHTML = '🔄 刷新数据'; }
+}
+
+async function refreshSignal() {
+    loadSignal();
+}
+
+function loadAll() {
+    loadSignal();
+    loadFundamentals();
+    loadCalendar();
+    loadStatus();
+    loadMt4Settings();
+    loadTrade();
+    loadTrail();
+    loadExitRev();
+    loadEurRsi();
+    if(document.getElementById('goldStatus')) loadGold();
+}
+
+function switchTab(name) {
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+    document.getElementById('tab-' + name).classList.add('active');
+    document.querySelector('.nav-tab[onclick*="' + name + '"]').classList.add('active');
+    if (name === 'review') loadReview();
+}
+
+async function loadReview() {
+    const box = document.getElementById('reviewBox');
+    box.textContent = '加载中...';
+    try {
+        const res = await fetchJSON('/api/review', 30000);
+        if (res.success) {
+            box.textContent = res.data.report;
+        } else {
+            box.textContent = '加载失败: ' + res.error;
+        }
+    } catch (e) {
+        box.textContent = '加载超时: 复盘数据生成时间较长，请稍后重试';
+    }
+}
+
+
+
+// ── 黄金 ──
+async function loadGold() {
+    const el = document.getElementById('goldStatus');
+    try {
+        const r = await fetch('/api/gold/status');
+        const d = await r.json();
+        if (!d.success) { el.textContent = '加载失败'; return; }
+        const s = d.data;
+        document.getElementById('goldEnabled').value = s.enabled ? 'true' : 'false';
+        document.getElementById('goldMaxOpen').value = s.max_open || 2;
+        document.getElementById('goldAutoTrade').value = s.auto_trade ? 'true' : 'false';
+        try {
+            const gset = await (await fetch('/api/settings/gold')).json();
+            if (gset.success && gset.data) {
+                document.getElementById('goldBeTrigger').value = gset.data.be_trigger_usd ?? 50;
+                document.getElementById('goldBeBuffer').value = gset.data.be_lock_buffer_points ?? 3;
+                document.getElementById('goldFuseStreak').value = gset.data.fuse_max_loss_streak ?? 2;
+            }
+        } catch(e) {}
+        let html = '';
+        html += `状态: ${s.enabled ? '🟢 运行中' : '🔴 关闭'} | `;
+        html += `在途: ${s.open_count}/${s.max_open} 单 | `;
+        html += `评估: ${s.eval_count} 次\n`;
+        if (s.open_trades && s.open_trades.length > 0) {
+            html += '\n在途订单:\n';
+            for (const t of s.open_trades) {
+                html += `  ${t.direction === 'SELL' ? '🔴' : '🟢'} ${t.direction} @ ${t.entry} SL=${t.sl} TP=${t.tp} (${t.pattern})${t.be_locked ? ' 🔒保本' : ''}\n`;
+            }
+        }
+        if (s.fuse) {
+            const f = s.fuse;
+            const paused = [];
+            for (const d of ['SELL', 'BUY']) {
+                if (f.paused_until && f.paused_until[d]) paused.push(d);
+            }
+            if (paused.length > 0) html += `\n⛔ 熔断暂停中: ${paused.join('+')} (${f.cooldown_hours}h冷却)\n`;
+            else html += `\n✅ 熔断: 计数 ${(f.loss_streak?.SELL||0)+(f.loss_streak?.BUY||0)}/${f.max_streak || 2} (保本触发阈值见设置)\n`;
+        }
+        el.textContent = html;
+    } catch(e) { el.textContent = '加载失败: ' + e.message; }
+}
+async function saveGold() {
+    await fetch('/api/settings/gold', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            enabled: document.getElementById('goldEnabled').value === 'true',
+            max_open: parseInt(document.getElementById('goldMaxOpen').value) || 2,
+            auto_trade: document.getElementById('goldAutoTrade').value === 'true',
+            be_trigger_usd: parseFloat(document.getElementById('goldBeTrigger').value) || 0,
+            be_lock_buffer_points: parseInt(document.getElementById('goldBeBuffer').value) || 0,
+            fuse_max_loss_streak: parseInt(document.getElementById('goldFuseStreak').value) || 0
+        })
+    });
+    loadGold();
+}
+
+// ── MT4 设置 ──
+async function loadMt4Settings() {
+    try {
+        const r = await fetch('/api/settings/mt4');
+        const d = await r.json();
+        if (d.success) {
+            document.getElementById('mt4Url').value = d.data.url || '';
+            document.getElementById('mt4Enabled').value = d.data.enabled ? 'true' : 'false';
+        }
+    } catch(e) {}
+}
+
+// ── 交易设置: EURUSD RSI 过滤器 ──
+async function loadEurRsi() {
+    try {
+        const r = await fetch('/api/settings/eurusd');
+        const d = await r.json();
+        if (d.success && document.getElementById('eurRsiEnabled')) {
+            document.getElementById('eurRsiEnabled').value = d.data.rsi_enabled ? 'true' : 'false';
+            document.getElementById('eurRsiLo').value = d.data.rsi_lo;
+            document.getElementById('eurRsiHi').value = d.data.rsi_hi;
+        }
+    } catch(e) {}
+}
+async function saveEurRsi() {
+    const p = {
+        rsi_enabled: document.getElementById('eurRsiEnabled').value === 'true',
+        rsi_lo: parseInt(document.getElementById('eurRsiLo').value),
+        rsi_hi: parseInt(document.getElementById('eurRsiHi').value)
+    };
+    try {
+        const r = await fetch('/api/settings/eurusd', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(p)
+        });
+        const d = await r.json();
+        const el = document.getElementById('eurRsiResult');
+        el.style.color = d.success ? '#3fb950' : '#f85149';
+        el.textContent = d.success
+            ? (p.rsi_enabled ? `✅ EURUSD 已开启 RSI ${p.rsi_lo}-${p.rsi_hi} 过滤` : '✅ EURUSD 已关闭 RSI（原始设计）')
+            : ('❌ ' + (d.error || '保存失败'));
+    } catch(e) { console.error(e); }
+}
+
+// ── 交易设置: EURUSD 手数 / 锁利追踪 ──
+async function loadTrade() {
+    try {
+        const r = await fetch('/api/settings/trade');
+        const d = await r.json();
+        if (d.success && document.getElementById('tradeLots')) {
+            document.getElementById('tradeLots').value = d.data.default_lots;
+            document.getElementById('tradeMaxSameDir').value = d.data.max_same_dir || 3;
+        }
+        // 熔断设置(exit 段)
+        const r2 = await fetch('/api/settings/exit');
+        const d2 = await r2.json();
+        if (d2.success && document.getElementById('tradeFuseStreak')) {
+            const t = d2.data || {};
+            document.getElementById('tradeFuseStreak').value = t.fuse_enabled
+                ? (t.fuse_max_loss_streak || 2) : 0;
+            document.getElementById('tradeFuseHours').value = t.fuse_cooldown_hours || 48;
+        }
+    } catch(e) {}
+}
+async function saveFuse() {
+    const streak = parseInt(document.getElementById('tradeFuseStreak').value) || 0;
+    const hours = parseInt(document.getElementById('tradeFuseHours').value) || 48;
+    try {
+        const r = await fetch('/api/settings/exit', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                fuse_enabled: streak > 0,
+                fuse_max_loss_streak: streak,
+                fuse_cooldown_hours: hours
+            })
+        });
+        const d = await r.json();
+        const el = document.getElementById('tradeFuseResult');
+        el.style.color = d.success ? '#3fb950' : '#f85149';
+        el.textContent = d.success
+            ? (streak > 0 ? `✅ 熔断: 连续${streak}次止损 → 暂停${hours}小时` : '✅ 熔断已关闭')
+            : ('❌ ' + (d.error || '保存失败'));
+    } catch(e) { console.error(e); }
+}
+async function saveTrade() {
+    const lots = parseFloat(document.getElementById('tradeLots').value) || 0.02;
+    const maxSameDir = parseInt(document.getElementById('tradeMaxSameDir').value) || 3;
+    try {
+        const r = await fetch('/api/settings/trade', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({default_lots: lots, max_same_dir: maxSameDir})
+        });
+        const d = await r.json();
+        const el = document.getElementById('tradeResult');
+        el.style.color = d.success ? '#3fb950' : '#f85149';
+        el.textContent = d.success ? `✅ 已保存: EURUSD 每笔 ${lots} 手，同方向最多 ${maxSameDir} 单` : ('❌ ' + (d.error || '保存失败'));
+    } catch(e) { console.error(e); }
+}
+async function loadTrail() {
+    try {
+        const r = await fetch('/api/settings/trail');
+        const d = await r.json();
+        if (d.success && document.getElementById('trailEnabled')) {
+            const t = d.data || {};
+            document.getElementById('trailEnabled').value = t.enabled ? 'true' : 'false';
+            document.getElementById('trailTrigger').value = t.trigger;
+            document.getElementById('trailLock').value = t.lock_ratio;
+            document.getElementById('trailMult').value = t.tp_mult;
+        }
+    } catch(e) {}
+}
+async function saveTrail() {
+    const p = {
+        enabled: document.getElementById('trailEnabled').value === 'true',
+        trigger: parseFloat(document.getElementById('trailTrigger').value) || 0.7,
+        lock_ratio: parseFloat(document.getElementById('trailLock').value) || 0.8,
+        tp_mult: parseFloat(document.getElementById('trailMult').value) || 2.0
+    };
+    try {
+        const r = await fetch('/api/settings/trail', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(p)
+        });
+        const d = await r.json();
+        const el = document.getElementById('trailResult');
+        el.style.color = d.success ? '#3fb950' : '#f85149';
+        el.textContent = d.success
+            ? `${p.enabled ? '🟢 已开启' : '🔴 已关闭'} 锁利追踪 | 触发≥${(p.trigger*100).toFixed(0)}% → 锁TP×${p.lock_ratio.toFixed(2)} → TP×${p.tp_mult.toFixed(1)}`
+            : ('❌ ' + (d.error || '保存失败'));
+    } catch(e) { console.error(e); }
+}
+async function loadExitRev() {
+    try {
+        const r = await fetch('/api/settings/exit');
+        const d = await r.json();
+        if (d.success && document.getElementById('exitRevEnabled')) {
+            const t = d.data || {};
+            document.getElementById('exitRevEnabled').value = t.reversal_auto_close ? 'true' : 'false';
+            document.getElementById('exitRevMinProfit').value = t.min_profit_pips;
+            document.getElementById('exitRevTf').value = t.reversal_tf || 'H1';
+        }
+        // 熔断运行时状态
+        try {
+            const rs = await (await fetch('/api/daemon/status')).json();
+            const f = (rs.data && rs.data.fuse) || {};
+            const el = document.getElementById('exitRevResult');
+            const paused = [];
+            for (const d of ['SELL', 'BUY']) {
+                if (f.paused_until && f.paused_until[d]) paused.push(d);
+            }
+            if (!f.enabled) {
+                el.textContent = '⛔ 熔断已关闭';
+            } else if (paused.length > 0) {
+                el.textContent = `⛔ 熔断暂停中: ${paused.join('+')} 方向 (连续止损, 冷却中)`;
+                el.style.color = '#f85149';
+            } else {
+                const streak = ((f.loss_streak && (f.loss_streak.SELL + f.loss_streak.BUY)) || 0);
+                el.textContent = `✅ 熔断正常 (连续止损计数: ${streak}/${f.max_streak || 2})`;
+                el.style.color = '#8b949e';
+            }
+        } catch(e) {}
+    } catch(e) {}
+}
+async function saveExitRev() {
+    const p = {
+        reversal_auto_close: document.getElementById('exitRevEnabled').value === 'true',
+        min_profit_pips: parseFloat(document.getElementById('exitRevMinProfit').value) || 0,
+        reversal_tf: document.getElementById('exitRevTf').value
+    };
+    try {
+        const r = await fetch('/api/settings/exit', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(p)
+        });
+        const d = await r.json();
+        const el = document.getElementById('exitRevResult');
+        el.style.color = d.success ? '#3fb950' : '#f85149';
+        el.textContent = d.success
+            ? `${p.reversal_auto_close ? '🟢 已开启' : '🔴 已关闭'} 反转自动平仓 | ${p.reversal_tf}周期 + 浮盈≥${p.min_profit_pips}pips → 保本出场`
+            : ('❌ ' + (d.error || '保存失败'));
+    } catch(e) { console.error(e); }
+}
+async function saveMt4() {
+    const url = document.getElementById('mt4Url').value.trim();
+    const enabled = document.getElementById('mt4Enabled').value === 'true';
+    await fetch('/api/settings/mt4', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({url, enabled})
+    });
+}
+async function testMt4() {
+    const url = document.getElementById('mt4Url').value.trim();
+    if (!url) { alert('请先输入地址'); return; }
+    document.getElementById('mt4TestResult').innerHTML = '测试中...';
+    // 同时更新 VPS 状态
+    fetch('/api/daemon/status').then(r=>r.json()).then(d=>{
+        if(d.data&&d.data.vps){
+            const v=d.data.vps;
+            document.getElementById('vpsHttp').textContent = v.http ? '🟢' : '🔴';
+            document.getElementById('vpsTcp').textContent = v.tcp ? '🟢' : '🔴';
+            document.getElementById('vpsEa').textContent = v.ea ? '🟢' : '⚫';
+            document.getElementById('vpsMs').textContent = v.latency_ms;
+            document.getElementById('vpsTime').textContent = v.last_check||'-';
+        }
+    });
+    try {
+        const r = await fetch('/api/settings/mt4/test', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({url})
+        });
+        const d = await r.json();
+        if (d.success) {
+            document.getElementById('mt4TestResult').innerHTML = 
+                '🟢 HTTP ✅ | TCP ✅ | EA: ' + (d.data.ea_connected ? '🟢 已连接' : '⚫ 未连接');
+        } else {
+            document.getElementById('mt4TestResult').innerHTML = '🔴 连接失败: ' + (d.data.http_error || d.error || '');
+        }
+    } catch(e) {
+        document.getElementById('mt4TestResult').innerHTML = '🔴 错误: ' + e.message;
+    }
+}
+
+// ── 交易日志 ──
+function saveReflection(signalFile) {
+    const id = 'refl_' + signalFile.replace(/[^a-zA-Z0-9]/g, '');
+    const el = document.getElementById(id);
+    if (el) annotate(signalFile, 'reflection', el.value);
+}
+
+/** 生成可编辑控件（跟单/出场结果/出场价 + 心得编辑）— 活跃卡与归档卡修改共用 */
+function editControlsHtml(s, showDone) {
+    const sf = s.signal_file;
+    const entered = s.entered === true;
+    const result = s.exit_result || '';
+    const rid = 'refl_' + sf.replace(/[^a-zA-Z0-9]/g, '');
+    const resultLabel = result === 'tp1' ? '✅ TP1' : result === 'tp2' ? '🏆 TP2' :
+        result === 'tp' ? '✅ 止盈' : result === 'sl' ? '❌ SL' : result === 'be' ? '🔒 保本' :
+        result === 'manual' ? '✋ 手动' :
+        (entered ? '🔄 持仓中' : '⏳ 待标注');
+
+    let h = '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px;">';
+    h += `<select onchange="annotate('${sf}','entered',this.value)" style="background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:4px 8px;font-size:12px;">`;
+    h += `<option value="">-- 是否跟单 --</option>`;
+    h += `<option value="true" ${entered?'selected':''}>✅ 已跟单</option>`;
+    h += `<option value="false" ${s.entered===false?'selected':''}>❌ 未跟单</option></select>`;
+    h += `<select onchange="annotate('${sf}','exit_result',this.value)" style="background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:4px 8px;font-size:12px;">`;
+    h += `<option value="">-- 出场结果 --</option>`;
+    h += `<option value="tp1" ${result==='tp1'?'selected':''}>✅ TP1 止盈</option>`;
+    h += `<option value="tp2" ${result==='tp2'?'selected':''}>🏆 TP2 止盈</option>`;
+    h += `<option value="tp" ${result==='tp'?'selected':''}>✅ 止盈(黄金)</option>`;
+    h += `<option value="sl" ${result==='sl'?'selected':''}>❌ 止损</option>`;
+    h += `<option value="manual" ${result==='manual'?'selected':''}>✋ 手动平仓</option>`;
+    h += `<option value="open" ${result==='open'?'selected':''}>🔄 持仓中</option></select>`;
+    h += `<input placeholder="实际成交价" value="${s.exit_price||''}" onchange="annotate('${sf}','exit_price',this.value)" style="width:90px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:4px 8px;font-size:12px;">`;
+    h += `<span style="font-size:12px;color:#58a6ff;">${resultLabel}</span>`;
+    if (showDone) {
+        h += `<button onclick="toggleEdit('${sf}',null)" style="background:#1f6feb;color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:12px;cursor:pointer;">✅ 完成</button>`;
+    }
+    h += '</div>';
+    h += `<textarea id="${rid}" placeholder="✍️ 交易心得 & 复盘反思..." onblur="saveReflection('${sf}')" style="width:100%;margin-top:8px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px;font-size:12px;min-height:60px;resize:vertical;">${s.reflection||''}</textarea>`;
+    h += `<button onclick="saveReflection('${sf}')" style="margin-top:4px;background:#238636;color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:12px;cursor:pointer;">💾 保存心得</button>`;
+    return h;
+}
+
+/** 展开/收起归档卡的编辑框 */
+function toggleEdit(signalFile, btn) {
+    const id = signalFile.replace(/[^a-zA-Z0-9]/g, '');
+    const box = document.getElementById('editbox_' + id);
+    if (!box) return;
+    const hidden = box.style.display === 'none';
+    box.style.display = hidden ? 'block' : 'none';
+    const b = document.querySelector('button[data-editbtn="' + id + '"]');
+    if (b) b.textContent = hidden ? '🙈 收起' : '✏️ 修改';
+}
+
+function renderCard(s, archived) {
+    const sym = s.symbol || 'EUR/USD';
+    const dec = (sym === 'XAU/USD') ? 2 : 5;   // 黄金价格位数少
+    const dir = s.direction === 'SELL' ? '🔴 做空' : '🟢 做多';
+    const stars = s.confidence ? '★'.repeat(s.confidence) + '☆'.repeat(5-s.confidence) : '';
+    const entered = s.entered === true;
+    const result = s.exit_result || '';
+    const resultLabel = result === 'tp1' ? '✅ TP1' : result === 'tp2' ? '🏆 TP2' :
+        result === 'tp' ? '✅ 止盈' : result === 'sl' ? '❌ SL' : result === 'be' ? '🔒 保本' :
+        result === 'manual' ? '✋ 手动' :
+        (entered ? '🔄 持仓中' : '⏳ 待标注');
+
+    const title = archived ? '📦 已归档' : (entered && result ? '📊 已平仓' : '📝 待处理');
+    const bgColor = archived ? '#0d1117' : (entered && result ? '#0d2818' : '#161b22');
+
+    let html = `<div style="background:${bgColor};border:1px solid #30363d;border-radius:6px;padding:12px;margin-bottom:8px;">`;
+    html += `<div style="display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap;">`;
+    html += `<b>${dir}</b><span style="background:#21262d;border:1px solid #30363d;border-radius:3px;padding:1px 6px;font-size:11px;color:#58a6ff;">${sym}</span>`;
+    html += `<span style="color:#8b949e;font-size:13px;">${title} · ${s.signal_time}</span>`;
+    html += `<span>${stars}</span></div>`;
+    html += `<div style="font-size:13px;color:#c9d1d9;margin:4px 0;">`;
+    html += `入场 ${s.entry_price?.toFixed(dec)} | SL ${s.stop_loss?.toFixed(dec)} | TP1 ${s.take_profit_1?.toFixed(dec)}`;
+    if (s.rr_ratio) html += ` | R:R ${s.rr_ratio.toFixed(1)}`;
+    if (s.exit_price) html += ` | 出场 ${s.exit_price.toFixed(dec)}`;
+    if (s.pnl_usd !== null && s.pnl_usd !== undefined) html += ` | PnL <span style="color:${s.pnl_usd >= 0 ? '#3fb950' : '#f85149'}">${s.pnl_usd >= 0 ? '+' : ''}${s.pnl_usd.toFixed(2)}</span>`;
+    html += `</div>`;
+
+    if (!archived) {
+        html += editControlsHtml(s, false);
+    } else {
+        // 归档卡片: 只读摘要 + "✏️ 修改"展开编辑
+        const bid = s.signal_file.replace(/[^a-zA-Z0-9]/g, '');
+        if (s.reflection) html += `<div style="margin-top:6px;padding:8px;background:#0d1117;border-radius:4px;font-size:12px;color:#8b949e;">💬 ${s.reflection}</div>`;
+        html += `<div style="margin-top:4px;font-size:12px;color:#58a6ff;">${resultLabel} | 标注于 ${s.annotated_at?.slice(0,16)||''}</div>`;
+        html += `<button data-editbtn="${bid}" onclick="toggleEdit('${s.signal_file}',null)" style="margin-top:8px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:4px 12px;font-size:12px;cursor:pointer;">✏️ 修改</button>`;
+        html += `<div id="editbox_${bid}" style="display:none;">${editControlsHtml(s, true)}</div>`;
+    }
+    html += '</div>';
+    return html;
+}
+
+async function loadJournal() {
+    const list = document.getElementById('journalList');
+    const summary = document.getElementById('journalSummary');
+    list.innerHTML = '加载中...';
+    try {
+        const resp = await fetch('/api/journal/signals');
+        const data = await resp.json();
+        if (!data.success) { list.innerHTML = '⚠ ' + data.error; return; }
+
+        let signals = data.data;
+        const symFilter = document.getElementById('journalSymbol').value;
+        if (symFilter) signals = signals.filter(s => (s.symbol || 'EUR/USD') === symFilter);
+
+        if (signals.length === 0) {
+            list.innerHTML = '<div style="color:#8b949e;padding:12px;">该品种暂无已推送的交易信号</div>';
+            summary.innerHTML = '';
+            return;
+        }
+
+        // 分两组：活跃(未完成标注) vs 归档(已完成)
+        const active = signals.filter(s => !(s.entered !== null && s.exit_result && s.exit_result !== 'open'));
+        const archived = signals.filter(s => s.entered !== null && s.exit_result && s.exit_result !== 'open');
+
+        const enteredAll = signals.filter(s => s.entered === true);
+        const tp = enteredAll.filter(s => s.exit_result === 'tp1' || s.exit_result === 'tp2');
+        const sl = enteredAll.filter(s => s.exit_result === 'sl');
+        const symName = symFilter || '全部';
+        summary.innerHTML =
+            `${symName} | 共 ${signals.length} 个信号 | 已跟单 ${enteredAll.length} | TP ${tp.length} | SL ${sl.length} | 归档 ${archived.length}`;
+
+        let html = '';
+        for (const s of active) {
+            html += renderCard(s, false);
+        }
+        if (archived.length > 0) {
+            html += '<div style="color:#8b949e;font-size:13px;margin:16px 0 8px 0;border-top:1px solid #30363d;padding-top:12px;">📦 已归档记录</div>';
+            for (const s of archived) {
+                html += renderCard(s, true);
+            }
+        }
+        list.innerHTML = html;
+    } catch(e) { list.innerHTML = '⚠ 加载失败: ' + e.message; }
+}
+async function annotate(signalFile, field, value) {
+    try {
+        const payload = { signal_file: signalFile };
+        if (value === 'true') payload[field] = true;
+        else if (value === 'false') payload[field] = false;
+        else if (value === '') payload[field] = null;
+        else if (!isNaN(value) && field.includes('price')) payload[field] = parseFloat(value);
+        else payload[field] = value;
+
+        const resp = await fetch('/api/journal/annotate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const result = await resp.json();
+        if (result.success) {
+            setTimeout(() => loadJournal(), 200);  // 等文件写入完成再刷新
+        }
+    } catch(e) { console.error(e); }
+}
+
+// 每 5 分钟自动刷新（信号+基本面+日历+状态）
+loadAll();
+setInterval(loadAll, 5 * 60 * 1000);
+</script>
+</body>
+</html>
