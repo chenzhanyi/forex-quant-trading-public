@@ -5,7 +5,7 @@
 
 用法:
     pip install requests
-    python mt4_bridge.py --relay http://43.134.95.147:8080 --poll 5
+    python mt4_bridge.py --relay http://你的中继服务器:8080 --poll 5
 """
 import json
 import sys
@@ -142,7 +142,7 @@ class MT4Bridge:
 
 
 if __name__ == "__main__":
-    relay = sys.argv[1] if len(sys.argv) > 1 else "http://43.134.95.147:8080"
+    relay = sys.argv[1] if len(sys.argv) > 1 else "http://你的中继服务器:8080"
     poll = int(sys.argv[2]) if len(sys.argv) > 2 else 5
 
     bridge = MT4Bridge(relay, poll)
