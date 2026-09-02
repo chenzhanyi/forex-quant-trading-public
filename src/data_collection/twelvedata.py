@@ -34,9 +34,16 @@ MIN_INTERVAL_SEC = 1.0
 
 
 class TwelveDataClient:
-    """Twelve Data REST 客户端(备用数据源)"""
+    """Twelve Data REST 客户端(备用数据源)
 
-    def __init__(self):
+    Args:
+        use_proxy: None=按中控台模式自动(off→直连; always→代理;
+                   auto→先直连, 失败再用代理重试一次)
+                   True/False 强制走/不走专用代理。
+    专用代理地址复用 oanda.get_dedicated_proxy_url()(同一份中控台配置)。
+    """
+
+    def __init__(self, use_proxy: Optional[bool] = None):
         cfg = config.load()
         self.api_key = cfg.get("twelvedata", {}).get("api_key", "")
         if not self.api_key or "YOUR_" in self.api_key:
@@ -44,6 +51,20 @@ class TwelveDataClient:
         self.base_url = "https://api.twelvedata.com"
         self._last_call = 0.0
         self._configured = bool(self.api_key)
+        self._use_proxy = use_proxy
+
+    def _proxy_candidates(self) -> List[Optional[str]]:
+        """按中控台配置给出要尝试的代理列表(公共决策函数):
+        [None]=仅直连; [None, url]=先直连失败再代理(auto); [url]=仅代理"""
+        from src.utils.network import get_proxy_candidates, get_dedicated_proxy_url
+
+        proxy_url = get_dedicated_proxy_url()
+        if self._use_proxy is True:
+            return [proxy_url] if proxy_url else [None]
+        if self._use_proxy is False:
+            return [None]
+        # 自动: 公共候选序列(默认通道=None → 失败再专用代理)
+        return get_proxy_candidates(default_proxy=None)
 
     def _throttle(self) -> None:
         """免费版 8 次/分钟 — 强制调用间隔"""
@@ -72,19 +93,34 @@ class TwelveDataClient:
         if interval is None:
             raise ValueError(f"不支持的周期: {granularity}")
 
-        self._throttle()
-        resp = httpx.get(
-            f"{self.base_url}/time_series",
-            params={
-                "symbol": sym,
-                "interval": interval,
-                "outputsize": min(max(count, 1), 5000),
-                "apikey": self.api_key,
-                "timezone": "UTC",
-            },
-            timeout=30,
-        )
-        data = resp.json()
+        params = {
+            "symbol": sym,
+            "interval": interval,
+            "outputsize": min(max(count, 1), 5000),
+            "apikey": self.api_key,
+            "timezone": "UTC",
+        }
+        # 按模式依次尝试: 直连/专用代理(失败自动切换, 保证备用源可用性)
+        last_err = None
+        for proxy in self._proxy_candidates():
+            try:
+                self._throttle()
+                resp = httpx.get(
+                    f"{self.base_url}/time_series",
+                    params=params,
+                    timeout=30,
+                    proxy=proxy,
+                )
+                data = resp.json()
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                if proxy:
+                    logger.info(f"🌐 TwelveData 直连失败, 改走专用代理重试: {str(e)[:50]}")
+                continue
+        if last_err is not None:
+            raise last_err
         if data.get("status") != "ok":
             raise ConnectionError(
                 f"Twelve Data 错误: {data.get('code')} {data.get('message')}"

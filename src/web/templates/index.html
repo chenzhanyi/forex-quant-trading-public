@@ -122,33 +122,63 @@
         <div class="nav-tab" onclick="switchTab('review')">📋 复盘</div>
         <div class="nav-tab" onclick="switchTab('journal')">📝 交易日志</div>
         <div class="nav-tab" onclick="switchTab('gold')">🥇 黄金</div>
+        <div class="nav-tab" onclick="switchTab('eur')">💶 欧元</div>
+        <div class="nav-tab" onclick="switchTab('aud')">🦘 澳元</div>
         <div class="nav-tab" onclick="switchTab('settings')">⚙️ 设置</div>
     </div>
 
     <!-- Tab: 总览 -->
     <div id="tab-dashboard" class="tab-content active">
 
-    <!-- 第一行: 核心信息 (4列) -->
+    <!-- 第一行: 三品种信号 (各含大势+建议) -->
     <div class="grid grid-4" id="signalGrid">
         <div class="card">
-            <div class="card-title">📈 大势判断 <span id="sentimentLabel" style="font-size:12px;font-weight:400;margin-left:8px;"></span></div>
+            <div class="card-title">💶 欧元信号 <span id="sentimentLabel" style="font-size:12px;font-weight:400;margin-left:8px;"></span></div>
             <div id="trendDisplay" class="value signal-wait">加载中...</div>
             <div id="trendDetail" class="label">D1: -- | H4: --</div>
+            <div style="margin-top:8px;border-top:1px solid #30363d;padding-top:8px;">
+                <div id="signalDisplay" class="value signal-wait">加载中...</div>
+                <div id="signalReason" class="label">--</div>
+            </div>
         </div>
         <div class="card">
-            <div class="card-title">💡 交易建议</div>
-            <div id="signalDisplay" class="value signal-wait">加载中...</div>
-            <div id="signalReason" class="label">--</div>
+            <div class="card-title">🥇 黄金信号</div>
+            <div id="goldSignalDisplay" class="value signal-wait">加载中...</div>
+            <div id="goldSignalDetail" class="label">--</div>
         </div>
         <div class="card">
-            <div class="card-title">🏷 可信度</div>
-            <div id="confidenceDisplay" class="value">--</div>
-            <div id="riskDisplay" class="label">R:R: -- | 止损: -- pips</div>
+            <div class="card-title">🦘 澳元信号</div>
+            <div id="audSignalDisplay" class="value signal-wait">加载中...</div>
+            <div id="audSignalDetail" class="label">--</div>
         </div>
         <div class="card">
             <div class="card-title">📊 今日信号</div>
             <div id="todaySignalCount" class="value">--</div>
             <div id="todaySignalDetail" class="label">--</div>
+        </div>
+    </div>
+
+    <!-- 三品种概况 + 策略说明 -->
+    <div class="grid grid-4" style="margin-bottom:16px;">
+        <div class="card">
+            <div class="card-title">💶 欧元概况</div>
+            <div id="eurSummary" class="label" style="line-height:1.9;">加载中...</div>
+        </div>
+        <div class="card">
+            <div class="card-title">🥇 黄金概况</div>
+            <div id="goldSummary" class="label" style="line-height:1.9;">加载中...</div>
+        </div>
+        <div class="card">
+            <div class="card-title">🦘 澳元概况</div>
+            <div id="audSummary" class="label" style="line-height:1.9;">加载中...</div>
+        </div>
+        <div class="card">
+            <div class="card-title">📚 策略说明（三品种）</div>
+            <div class="label" style="line-height:1.9;">
+                <b>💶 欧元:</b> 六条件入场(H4 200SMA+EMA+K线+欧美盘15-23) | TP40p / SL=ATR×2.5 | 熔断2连SL→48h | 反转平仓H1<br>
+                <b>🦘 澳元:</b> 时段8-16(悉尼+伦敦) | TP35p / SL=ATR×2.0 | 熔断2连SL→48h | 反转平仓H1<br>
+                <b>🥇 黄金:</b> 六条件+RSI30-60 | TP$100 / SL=ATR×2.5 | 保本$50 | 熔断2连SL→48h
+            </div>
         </div>
     </div>
 
@@ -205,7 +235,12 @@
     <div class="card" style="margin-bottom:16px;">
         <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
             <span>📰 基本面摘要（近 7 天）</span>
-            <span>
+            <span style="display:flex;gap:8px;align-items:center;">
+                <select id="fundSymbol" onchange="loadFundamentals()" style="background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:4px 8px;font-size:12px;">
+                    <option value="EUR/USD">💶 EUR/USD</option>
+                    <option value="XAU/USD">🥇 XAU/USD</option>
+                    <option value="AUD/USD">🦘 AUD/USD</option>
+                </select>
                 <span id="llmStatus" style="font-size:12px;color:#8b949e;margin-right:8px;"></span>
                 <button class="btn" id="btnLLM" onclick="runLLMAnalysis()" style="font-size:11px;padding:4px 10px;">🤖 AI 分析</button>
             </span>
@@ -235,6 +270,33 @@
 <!-- Tab: 设置 -->
 <div id="tab-settings" class="tab-content">
     <div class="card">
+        <div class="card-title">🌐 OANDA 专用代理 <span style="color:#8b949e;font-size:12px;">(VLESS链接→本地sing-box, 只服务OANDA行情请求, 不影响Clash和其他应用)</span></div>
+        <div style="margin:12px 0;">
+            <label style="color:#c9d1d9;font-size:13px;">使用时机</label>
+            <select id="proxyMode" onchange="saveProxy()" style="display:block;width:100%;margin-top:4px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px;font-size:13px;">
+                <option value="off">❌ 关闭 (不使用专用代理)</option>
+                <option value="auto">⚡ 自动 (OANDA直连失败才走代理, 推荐)</option>
+                <option value="always">🔒 始终 (所有OANDA请求走代理)</option>
+            </select>
+        </div>
+        <div style="margin:12px 0;">
+            <label style="color:#c9d1d9;font-size:13px;">本地代理端口 <span style="color:#8b949e;">(默认7898, 仅监听本机; 避开Clash的7890/7897)</span></label>
+            <div style="display:flex;gap:8px;margin-top:4px;">
+                <input id="proxyPort" type="number" min="1" max="65535" value="7898" style="flex:1;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px;font-size:13px;">
+                <button class="btn" onclick="saveProxy()">💾 保存</button>
+            </div>
+        </div>
+        <div style="margin:12px 0;">
+            <label style="color:#c9d1d9;font-size:13px;">VLESS 链接 <span style="color:#8b949e;">(保存在本机 gitignored 配置, 不会提交到仓库)</span></label>
+            <div style="display:flex;gap:8px;margin-top:4px;">
+                <input id="proxyVless" placeholder="vless://..." style="flex:1;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px;font-size:13px;">
+                <button class="btn" onclick="testProxy()">🔍 测试</button>
+            </div>
+        </div>
+        <div id="proxyResult" style="margin-top:8px;font-size:13px;color:#8b949e;"></div>
+    </div>
+
+    <div class="card">
         <div class="card-title">⚙️ MT4 远程交易设置</div>
         <div style="margin:12px 0;">
             <label style="color:#c9d1d9;font-size:13px;">中继服务器地址</label>
@@ -254,6 +316,19 @@
         <div id="mt4TestResult" style="margin-top:8px;font-size:13px;"></div>
     </div>
 
+
+</div>
+
+
+<!-- Tab: 欧元 -->
+<div id="tab-eur" class="tab-content">
+    <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
+            <span>💶 欧元 EUR/USD</span>
+            <button class="btn" onclick="loadEur()">🔄 刷新</button>
+        </div>
+        <div id="eurStatus" style="font-size:14px;line-height:1.8;">加载中...</div>
+    </div>
     <div class="card">
         <div class="card-title">🎯 EURUSD 每次交易手数</div>
         <div style="margin:12px 0;">
@@ -394,6 +469,52 @@
             <input id="goldFuseStreak" type="number" min="0" max="10" value="2" onchange="saveGold()" style="width:50px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:6px 10px;" title="同方向连续N次止损后暂停48h, 0=关闭">
             <span style="font-size:12px;color:#8b949e;">连SL熔断(0=关)</span>
         </div>
+        <div style="margin-top:12px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
+            <label style="font-size:13px;color:#c9d1d9;">每笔固定手数 <span style="font-size:12px;color:#8b949e;">(独立于欧美/澳元, 0.1手=1盎司, $1波动=$1盈亏 → MT4下单)</span></label>
+            <input id="goldLots" type="number" step="0.01" min="0.01" value="0.01" onchange="saveGold()" style="width:70px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:6px 10px;">
+            <button class="btn" onclick="saveGold()" style="padding:6px 12px;">💾 保存</button>
+        </div>
+    </div>
+</div>
+
+<!-- Tab: 澳元 -->
+<div id="tab-aud" class="tab-content">
+    <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
+            <span>🦘 澳元 AUD/USD <span style="font-size:12px;color:#8b949e;">(方案A: TP35/SL2.0/亚欧盘8-16 — 回测170天 84单58% +533p)</span></span>
+            <div style="display:flex;gap:8px;">
+                <button class="btn" onclick="evalAud()">🔍 手动评估</button>
+                <button class="btn" onclick="loadAud()">🔄 刷新</button>
+            </div>
+        </div>
+        <div id="audStatus" style="font-size:14px;line-height:1.8;">加载中...</div>
+        <div style="margin-top:12px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
+            <label style="font-size:13px;color:#c9d1d9;">启用澳元:</label>
+            <select id="audEnabled" onchange="saveAud()" style="background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:6px 10px;">
+                <option value="false">❌ 关闭</option>
+                <option value="true">✅ 开启</option>
+            </select>
+            <label style="font-size:13px;color:#c9d1d9;margin-left:8px;">同方向上限:</label>
+            <input id="audMaxOpen" type="number" min="1" max="10" value="3" onchange="saveAud()" style="width:60px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:6px 10px;">
+            <label style="font-size:13px;color:#c9d1d9;margin-left:8px;">自动下单:</label>
+            <select id="audAutoTrade" onchange="saveAud()" style="background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:6px 10px;">
+                <option value="false">❌ 仅信号</option>
+                <option value="true">✅ MT4自动下单(仅AUDUSD图表)</option>
+            </select>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
+            <label style="font-size:13px;color:#c9d1d9;">止盈:</label>
+            <input id="audTpPips" type="number" min="10" max="100" value="35" onchange="saveAud()" style="width:60px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:6px 10px;">
+            <span style="font-size:12px;color:#8b949e;">pips</span>
+            <label style="font-size:13px;color:#c9d1d9;margin-left:8px;">熔断:</label>
+            <input id="audFuseStreak" type="number" min="0" max="10" value="2" onchange="saveAud()" style="width:50px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:6px 10px;" title="同方向连续N次止损后暂停48h, 0=关闭">
+            <span style="font-size:12px;color:#8b949e;">连SL熔断(0=关, 回测贡献+349p)</span>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
+            <label style="font-size:13px;color:#c9d1d9;">每笔固定手数 <span style="font-size:12px;color:#8b949e;">(独立于欧美/黄金, → MT4下单)</span></label>
+            <input id="audLots" type="number" step="0.01" min="0.01" value="0.01" onchange="saveAud()" style="width:70px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:6px 10px;">
+            <button class="btn" onclick="saveAud()" style="padding:6px 12px;">💾 保存</button>
+        </div>
     </div>
 </div>
 
@@ -409,6 +530,7 @@
                     <option value="">📊 全部品种</option>
                     <option value="EUR/USD">EUR/USD 欧美</option>
                     <option value="XAU/USD">🥇 XAU/USD 黄金</option>
+                    <option value="AUD/USD">🦘 AUD/USD 澳元</option>
                 </select>
                 <button class="btn" onclick="loadJournal()">🔄 刷新</button>
             </div>
@@ -474,13 +596,17 @@ async function loadSignal() {
     const reasonEl = document.getElementById('signalReason');
     reasonEl.textContent = d.can_trade ? d.reason : (d.skip_reason || '--');
 
-    // 可信度
+    // 可信度卡片已并入入场详情(R:R/止损在详情区显示), 元素不存在时跳过
     const confEl = document.getElementById('confidenceDisplay');
-    confEl.textContent = d.can_trade ? '★'.repeat(d.confidence) + '☆'.repeat(5-d.confidence) : '--';
-    confEl.className = 'value ' + (d.can_trade ? 'signal-buy' : 'signal-wait');
-
-    document.getElementById('riskDisplay').textContent =
-        d.can_trade ? `R:R ${d.rr_ratio} | SL ${d.entry_price ? Math.abs((d.entry_price - d.stop_loss)*10000).toFixed(0) : '--'} pips` : '--';
+    if (confEl) {
+        confEl.textContent = d.can_trade ? '★'.repeat(d.confidence) + '☆'.repeat(5-d.confidence) : '--';
+        confEl.className = 'value ' + (d.can_trade ? 'signal-buy' : 'signal-wait');
+    }
+    const riskEl = document.getElementById('riskDisplay');
+    if (riskEl) {
+        riskEl.textContent =
+            d.can_trade ? `R:R ${d.rr_ratio} | SL ${d.entry_price ? Math.abs((d.entry_price - d.stop_loss)*10000).toFixed(0) : '--'} pips` : '--';
+    }
 
     // 入场详情
     document.getElementById('detDirection').textContent = d.direction || '--';
@@ -525,9 +651,10 @@ async function loadSignal() {
     }
 }
 
-async function loadFundamentals() {
+async function loadFundamentals(symbol) {
     try {
-        const res = await fetchJSON('/api/fundamentals');
+        const sym = symbol || document.getElementById('fundSymbol')?.value || 'EUR/USD';
+        const res = await fetchJSON('/api/fundamentals?symbol=' + encodeURIComponent(sym));
         if (res.success) {
             document.getElementById('fundamentalsBox').textContent = res.data.summary || '暂无数据';
         } else {
@@ -722,11 +849,19 @@ function loadAll() {
     loadCalendar();
     loadStatus();
     loadMt4Settings();
+    loadProxy();
     loadTrade();
     loadTrail();
     loadExitRev();
     loadEurRsi();
+    if(document.getElementById('eurStatus')) loadEur();
     if(document.getElementById('goldStatus')) loadGold();
+    loadEurSummary();
+    loadGoldSummary();
+    loadAudSummary();
+    loadGoldSignal();
+    loadAudSignal();
+    if(document.getElementById('audStatus')) loadAud();
 }
 
 function switchTab(name) {
@@ -735,6 +870,7 @@ function switchTab(name) {
     document.getElementById('tab-' + name).classList.add('active');
     document.querySelector('.nav-tab[onclick*="' + name + '"]').classList.add('active');
     if (name === 'review') loadReview();
+    if (name === 'eur') loadEur();
 }
 
 async function loadReview() {
@@ -754,6 +890,135 @@ async function loadReview() {
 
 
 
+// ── 总览: 三品种概况 ──
+async function loadGoldSignal() {
+    const vEl = document.getElementById('goldSignalDisplay');
+    const dEl = document.getElementById('goldSignalDetail');
+    if (!vEl) return;
+    try {
+        const r = await fetch('/api/gold/status');
+        const d = await r.json();
+        if (!d.success) { vEl.textContent = '加载失败'; return; }
+        const le = d.data.last_eval;
+        if (!le) { vEl.textContent = '等待首次评估'; dEl.textContent = '--'; return; }
+        vEl.textContent = le.summary || '--';
+        vEl.className = 'value ' + ((le.summary || '').includes('入场') ? 'signal-buy' : 'signal-wait');
+        dEl.textContent = `${le.detail || ''} | ${le.time || ''}`;
+    } catch(e) { vEl.textContent = '加载失败'; }
+}
+async function loadAudSignal() {
+    const vEl = document.getElementById('audSignalDisplay');
+    const dEl = document.getElementById('audSignalDetail');
+    if (!vEl) return;
+    try {
+        const r = await fetch('/api/aud/status');
+        const d = await r.json();
+        if (!d.success) { vEl.textContent = '加载失败'; return; }
+        const le = d.data.last_eval;
+        if (!le) { vEl.textContent = '等待首次评估'; dEl.textContent = '--'; return; }
+        vEl.textContent = le.summary || '--';
+        vEl.className = 'value ' + ((le.summary || '').includes('入场') ? 'signal-buy' : 'signal-wait');
+        dEl.textContent = `${le.detail || ''} | ${le.time || ''}`;
+    } catch(e) { vEl.textContent = '加载失败'; }
+}
+async function loadEurSummary() {
+    const el = document.getElementById('eurSummary');
+    if (!el) return;
+    try {
+        const r = await fetch('/api/daemon/status');
+        const d = await r.json();
+        if (!d.success) { el.textContent = '加载失败'; return; }
+        const s = d.data;
+        const eu = s.eurusd || {};
+        let html = '';
+        html += `${s.running ? '🟢 运行中' : '🔴 未运行'}${eu.autotrade ? '·自动下单' : '·仅信号'} | 评估 ${s.eval_count} 次<br>`;
+        html += `在途 ${(eu.positions||[]).length} 单`;
+        for (const p of (eu.positions||[])) {
+            html += `<br>  ${String(p.direction||'').includes('SELL') ? '🔴' : '🟢'} ${p.direction} @ ${p.entry}`;
+        }
+        const f = s.fuse || {};
+        const paused = [];
+        for (const dir of ['SELL', 'BUY']) if ((f.paused_until||{})[dir]) paused.push(dir);
+        html += paused.length ? `<br>⛔ 熔断暂停: ${paused.join('+')}` : `<br>✅ 熔断 ${(f.loss_streak?.SELL||0)+(f.loss_streak?.BUY||0)}/${f.max_streak||2}`;
+        el.innerHTML = html;
+    } catch(e) { el.textContent = '加载失败'; }
+}
+async function loadGoldSummary() {
+    const el = document.getElementById('goldSummary');
+    if (!el) return;
+    try {
+        const r = await fetch('/api/gold/status');
+        const d = await r.json();
+        if (!d.success) { el.textContent = '加载失败'; return; }
+        const s = d.data;
+        let html = '';
+        html += `${s.enabled ? '🟢 已启用' : '🔴 未启用'}${s.auto_trade ? '·自动下单' : '·仅信号'} | 评估 ${s.eval_count} 次<br>`;
+        html += `在途 ${s.open_count}/${s.max_open} 单`;
+        if (s.open_count > 0) {
+            for (const t of s.open_trades) {
+                html += `<br>  ${t.direction === 'SELL' ? '🔴' : '🟢'} ${t.direction} @ ${t.entry}${t.be_locked ? ' 🔒保本' : ''}`;
+            }
+        }
+        const f = s.fuse || {};
+        const paused = [];
+        for (const dir of ['SELL', 'BUY']) if ((f.paused_until||{})[dir]) paused.push(dir);
+        html += paused.length ? `<br>⛔ 熔断暂停: ${paused.join('+')}` : `<br>✅ 熔断 ${(f.loss_streak?.SELL||0)+(f.loss_streak?.BUY||0)}/${f.max_streak||2}`;
+        el.innerHTML = html;
+    } catch(e) { el.textContent = '加载失败'; }
+}
+async function loadAudSummary() {
+    const el = document.getElementById('audSummary');
+    if (!el) return;
+    try {
+        const r = await fetch('/api/aud/status');
+        const d = await r.json();
+        if (!d.success) { el.textContent = '加载失败'; return; }
+        const s = d.data;
+        let html = '';
+        html += `${s.enabled ? '🟢 已启用' : '🔴 未启用'}${s.auto_trade ? '·自动下单' : '·仅信号'} | 评估 ${s.eval_count} 次<br>`;
+        html += `在途 ${s.open_count}/${s.max_open} 单`;
+        if (s.open_count > 0) {
+            for (const t of s.open_trades) {
+                html += `<br>  ${t.direction === 'SELL' ? '🔴' : '🟢'} ${t.direction} @ ${t.entry}`;
+            }
+        }
+        const f = s.fuse || {};
+        const paused = [];
+        for (const dir of ['SELL', 'BUY']) if ((f.paused_until||{})[dir]) paused.push(dir);
+        html += paused.length ? `<br>⛔ 熔断暂停: ${paused.join('+')}` : `<br>✅ 熔断 ${(f.loss_streak?.SELL||0)+(f.loss_streak?.BUY||0)}/${f.max_streak||2}`;
+        el.innerHTML = html;
+    } catch(e) { el.textContent = '加载失败'; }
+}
+
+// ── 欧元 ──
+async function loadEur() {
+    const el = document.getElementById('eurStatus');
+    if (!el) return;
+    try {
+        const r = await fetch('/api/daemon/status');
+        const d = await r.json();
+        if (!d.success) { el.textContent = '加载失败'; return; }
+        const s = d.data;
+        let html = '';
+        html += `状态: ${s.running ? '🟢 运行中' : '🔴 未运行'} | 信号评估: ${s.eval_count} 次\n`;
+        const api = s.api || {};
+        html += `📡 API: ${api.status || '?'} ${api.last_call || ''} ${api.quote ? '| EUR/USD ' + api.quote : ''}\n`;
+        const f = s.fuse || {};
+        const paused = [];
+        for (const dir of ['SELL', 'BUY']) {
+            if ((f.paused_until || {})[dir]) paused.push(dir);
+        }
+        if (paused.length > 0) html += `⛔ 熔断暂停中: ${paused.join('+')} (${f.cooldown_hours}h冷却)\n`;
+        else html += `✅ 熔断: ${(f.loss_streak?.SELL||0)+(f.loss_streak?.BUY||0)}/${f.max_streak || 2} 计数\n`;
+        const h = s.history || {};
+        if (h.latest) {
+            html += `📊 最近信号: ${h.latest.direction} (${h.latest.recorded_at ? h.latest.recorded_at.slice(5,16) : ''})`;
+        }
+        el.textContent = html;
+        loadTrade(); loadTrail(); loadExitRev(); loadEurRsi();
+    } catch(e) { el.textContent = '加载失败: ' + e.message; }
+}
+
 // ── 黄金 ──
 async function loadGold() {
     const el = document.getElementById('goldStatus');
@@ -771,6 +1036,7 @@ async function loadGold() {
                 document.getElementById('goldBeTrigger').value = gset.data.be_trigger_usd ?? 50;
                 document.getElementById('goldBeBuffer').value = gset.data.be_lock_buffer_points ?? 3;
                 document.getElementById('goldFuseStreak').value = gset.data.fuse_max_loss_streak ?? 2;
+                document.getElementById('goldLots').value = gset.data.lots ?? 0.01;
             }
         } catch(e) {}
         let html = '';
@@ -805,13 +1071,163 @@ async function saveGold() {
             auto_trade: document.getElementById('goldAutoTrade').value === 'true',
             be_trigger_usd: parseFloat(document.getElementById('goldBeTrigger').value) || 0,
             be_lock_buffer_points: parseInt(document.getElementById('goldBeBuffer').value) || 0,
-            fuse_max_loss_streak: parseInt(document.getElementById('goldFuseStreak').value) || 0
+            fuse_max_loss_streak: parseInt(document.getElementById('goldFuseStreak').value) || 0,
+            lots: parseFloat(document.getElementById('goldLots').value) || 0.01
         })
     });
     loadGold();
 }
 
+// ── 澳元 ──
+async function loadAud() {
+    const el = document.getElementById('audStatus');
+    if (!el) return;
+    try {
+        const r = await fetch('/api/aud/status');
+        const d = await r.json();
+        if (!d.success) { el.textContent = '加载失败'; return; }
+        const s = d.data;
+        document.getElementById('audEnabled').value = s.enabled ? 'true' : 'false';
+        document.getElementById('audMaxOpen').value = s.max_open || 3;
+        document.getElementById('audAutoTrade').value = s.auto_trade ? 'true' : 'false';
+        try {
+            const aset = await (await fetch('/api/settings/aud')).json();
+            if (aset.success && aset.data) {
+                document.getElementById('audTpPips').value = aset.data.tp_pips ?? 35;
+                document.getElementById('audFuseStreak').value = aset.data.fuse_max_loss_streak ?? 2;
+                document.getElementById('audLots').value = aset.data.lots ?? 0.01;
+            }
+        } catch(e) {}
+        let html = '';
+        html += `状态: ${s.enabled ? '🟢 运行中' : '🔴 关闭'} | `;
+        html += `在途: ${s.open_count}/${s.max_open} 单 | `;
+        html += `评估: ${s.eval_count} 次\n`;
+        if (s.open_trades && s.open_trades.length > 0) {
+            html += '\n在途订单:\n';
+            for (const t of s.open_trades) {
+                html += `  ${t.direction === 'SELL' ? '🔴' : '🟢'} ${t.direction} @ ${t.entry} SL=${t.sl} TP=${t.tp} (${t.pattern})\n`;
+            }
+        }
+        if (s.fuse) {
+            const f = s.fuse;
+            const paused = [];
+            for (const d of ['SELL', 'BUY']) {
+                if (f.paused_until && f.paused_until[d]) paused.push(d);
+            }
+            if (paused.length > 0) html += `\n⛔ 熔断暂停中: ${paused.join('+')} (${f.cooldown_hours}h冷却)\n`;
+            else html += `\n✅ 熔断: 计数 ${(f.loss_streak?.SELL||0)+(f.loss_streak?.BUY||0)}/${f.max_streak || 2}\n`;
+        }
+        el.textContent = html;
+    } catch(e) { el.textContent = '加载失败: ' + e.message; }
+}
+async function saveAud() {
+    await fetch('/api/settings/aud', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            enabled: document.getElementById('audEnabled').value === 'true',
+            max_open: parseInt(document.getElementById('audMaxOpen').value) || 3,
+            auto_trade: document.getElementById('audAutoTrade').value === 'true',
+            tp_pips: parseFloat(document.getElementById('audTpPips').value) || 35,
+            fuse_max_loss_streak: parseInt(document.getElementById('audFuseStreak').value) || 0,
+            lots: parseFloat(document.getElementById('audLots').value) || 0.01
+        })
+    });
+    loadAud();
+}
+async function evalAud() {
+    const el = document.getElementById('audStatus');
+    try {
+        el.textContent = '⏳ 评估中...';
+        const r = await fetch('/api/aud/evaluate');
+        const d = await r.json();
+        loadAud();
+    } catch(e) { el.textContent = '评估失败: ' + e.message; }
+}
+
 // ── MT4 设置 ──
+// ── OANDA 专用代理 ──
+async function loadProxy() {
+    try {
+        const r = await fetch('/api/settings/proxy');
+        const d = await r.json();
+        if (d.success && document.getElementById('proxyMode')) {
+            const p = d.data || {};
+            document.getElementById('proxyMode').value = p.mode || 'off';
+            document.getElementById('proxyPort').value = p.port || 7898;
+            if (p.vless_url) document.getElementById('proxyVless').value = p.vless_url;
+            const proc = d.process || {};
+            renderProxyStatus(d.success, d.data || {}, proc, null);
+        }
+    } catch(e) {}
+}
+function renderProxyStatus(ok, cfg, proc, test) {
+    const el = document.getElementById('proxyResult');
+    if (!el) return;
+    if (!ok) { el.textContent = '❌ 加载失败'; el.style.color = '#f85149'; return; }
+    let parts = [];
+    if (proc && proc.running) parts.push(`🟢 代理进程运行中 (端口 ${proc.port})`);
+    else if (cfg.mode && cfg.mode !== 'off') parts.push('🔴 代理进程未运行');
+    if (test) {
+        parts.push(test.success ? '✅ 代理连通正常'
+            : (test.internet ? `✅ 通用网络通 / ❌ OANDA不通: ${test.error||''}`
+            : `❌ ${test.error || '连通失败'}`));
+        if (test.latency_ms) parts.push(`延迟${test.latency_ms}ms`);
+    }
+    el.textContent = parts.join(' · ');
+    el.style.color = '#8b949e';
+}
+async function saveProxy() {
+    const el = document.getElementById('proxyResult');
+    const payload = {
+        mode: document.getElementById('proxyMode').value,
+        port: parseInt(document.getElementById('proxyPort').value) || 7898,
+        vless_url: document.getElementById('proxyVless').value.trim(),
+    };
+    try {
+        el.textContent = '⏳ 保存中 (重启代理进程)...';
+        const r = await fetch('/api/settings/proxy', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        });
+        const d = await r.json();
+        if (!d.success) {
+            el.textContent = '❌ ' + (d.error || '保存失败');
+            el.style.color = '#f85149';
+            return;
+        }
+        const proc = d.process || {};
+        if (d.data.mode === 'off') {
+            el.textContent = '✅ 已关闭专用代理 (OANDA走直连/Clash配置)';
+            el.style.color = '#3fb950';
+        } else if (proc.success) {
+            el.textContent = `✅ 已保存并启动代理 (端口 ${proc.port})`;
+            el.style.color = '#3fb950';
+        } else {
+            el.textContent = `⚠️ 设置已保存, 但代理启动失败: ${proc.error || '未知'}`;
+            el.style.color = '#f85149';
+        }
+    } catch(e) {
+        el.textContent = '❌ 请求失败: ' + e;
+        el.style.color = '#f85149';
+    }
+}
+async function testProxy() {
+    const el = document.getElementById('proxyResult');
+    try {
+        // 先保存当前配置(可能刚粘贴链接还没保存)
+        await saveProxy();
+        el.textContent = '⏳ 连通性测试中...';
+        const r = await fetch('/api/proxy/test', {method: 'POST'});
+        const d = await r.json();
+        renderProxyStatus(true, {}, {running: true}, d);
+    } catch(e) {
+        el.textContent = '❌ 测试失败: ' + e;
+        el.style.color = '#f85149';
+    }
+}
+
 async function loadMt4Settings() {
     try {
         const r = await fetch('/api/settings/mt4');

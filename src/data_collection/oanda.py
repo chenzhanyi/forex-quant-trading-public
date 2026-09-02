@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
+import httpx
 import pandas as pd
 
 from src.utils.config_loader import config
@@ -11,6 +12,11 @@ from src.utils.config_loader import config
 logger = logging.getLogger(__name__)
 
 OANDA_FIELDS = ["time", "open", "high", "low", "close", "volume"]
+
+
+# 专用代理决策已抽到 src/utils/network.py — 此处 re-export 保持调用点兼容
+from src.utils.network import get_dedicated_proxy_url  # noqa: E402,F401
+
 
 # OANDA v20 API granularity 映射
 # 本地用 D1/H4, OANDA 用 D/H4
@@ -26,16 +32,29 @@ GRANULARITY_MAP = {
 
 
 class OandaClient:
-    """OANDA v20 REST API 客户端"""
+    """OANDA v20 REST API 客户端
 
-    def __init__(self):
+    Args:
+        use_proxy: True 时所有请求走专用代理(sing-box, 中控台配置);
+                   False 时走 network 段配置(Clash 或直连)。
+    """
+
+    def __init__(self, use_proxy: bool = False):
         self.cfg = config.load()
         self.api_key = self.cfg["oanda"]["api_key"]
         self.account_id = self.cfg["oanda"]["account_id"]
         self.base_url = self.cfg["oanda"]["base_url"]
         self.symbol = self.cfg["project"]["symbol"].replace("/", "_")  # EUR/USD → EUR_USD
         self.data_dir = Path(__file__).resolve().parent.parent.parent / "data" / "forex"
-        self.client = config.get_http_client()
+        if use_proxy:
+            proxy_url = get_dedicated_proxy_url()
+            if proxy_url:
+                self.client = httpx.Client(proxy=proxy_url, timeout=30)
+            else:
+                # 配置要求走代理但代理不可用 → 退回默认(直连/Clash), 不阻塞行情刷新
+                self.client = config.get_http_client()
+        else:
+            self.client = config.get_http_client()
 
         # 检查 API Key 是否已配置
         self._configured = self.api_key and "YOUR_" not in self.api_key
@@ -209,10 +228,13 @@ class OandaClient:
                 age_h = round((now - last_ts).total_seconds() / 3600, 1)
                 issues.append(f"数据过期 ({age_h}h 前，阈值 {max_age})")
 
-        # 价格异常检查 (EUR/USD 合理范围 0.80~1.80)
+        # 价格异常检查 — 按品种设合理范围(从文件名解析: EUR/AUD/XAU/...)
         if "close" in df.columns:
             close = df["close"]
-            anomalous = close[(close < 0.80) | (close > 1.80)]
+            base = filepath.stem.split("_")[0].upper()
+            ranges = {"AUD": (0.4, 1.2), "XAU": (1000, 20000), "EUR": (0.8, 1.8)}
+            lo, hi = ranges.get(base, (0.0, 1e12))
+            anomalous = close[(close < lo) | (close > hi)]
             if len(anomalous) > 0:
                 issues.append(f"{len(anomalous)} 条异常收盘价 (范围外: {anomalous.min():.4f}~{anomalous.max():.4f})")
 

@@ -195,20 +195,37 @@ class DaemonEngine:
             return True                    # 周五21:00 UTC 后
         return False
 
+    def _read_proxy_mode(self) -> str:
+        """中控台专用代理模式: off / auto(直连失败才用) / always(始终走代理)"""
+        try:
+            from src.utils.dashboard_settings import load as ui_load
+            p = ui_load().get("proxy") or {}
+            mode = p.get("mode", "off")
+            return mode if mode in ("off", "auto", "always") else "off"
+        except Exception:
+            return "off"
+
     def _refresh_market_data(self) -> None:
         """刷新行情数据: OANDA 主源 + Twelve Data 备用(自动重试)
 
         OANDA 请求失败, 或返回的数据本身停更(如 2026-08-29 全天缺口),
         都触发 Twelve Data 补齐 — 保证本地 parquet 始终有新数据。
+
+        专用代理(sing-box, 中控台可配): always=全程走代理;
+        auto=首次直连, 失败后从重试起走代理; off=不用。
         """
         max_retries = 3
         retry_delay = 10  # 秒
+        proxy_mode = self._read_proxy_mode()
 
         for attempt in range(1, max_retries + 1):
             t0 = time.time()
             try:
                 from src.data_collection.oanda import OandaClient
-                o = OandaClient()
+                use_proxy = (proxy_mode == "always") or (attempt > 1 and proxy_mode == "auto")
+                if use_proxy and attempt > 1:
+                    logger.info(f"🌐 OANDA 直连失败, 第{attempt}次重试走专用代理")
+                o = OandaClient(use_proxy=use_proxy)
                 latest_quote = 0
                 for tf in ["M15", "H1", "H4", "D1"]:
                     d = o.fetch_candles(tf, 200)
@@ -1341,15 +1358,16 @@ class DaemonEngine:
         news_thread = threading.Thread(target=self._news_loop, daemon=True)
         news_thread.start()
 
-        # 启动信号线程
-        signal_thread = threading.Thread(target=self._signal_loop, daemon=True)
-        signal_thread.start()
+        # 信号线程: 由统一调度器驱动(daemon/__init__.py 每15分钟统一拉取
+        # EURUSD/黄金/澳元三品种数据 → 依次评估下单/平仓/反转), 此处不再自起循环
+        # signal_thread = threading.Thread(target=self._signal_loop, daemon=True)
+        # signal_thread.start()
 
         # 启动复盘线程
         review_thread = threading.Thread(target=self._review_loop, daemon=True)
         review_thread.start()
 
-        return signal_thread, review_thread, news_thread, push_thread
+        return review_thread, news_thread, push_thread
 
     def stop(self):
         """停止守护进程"""
@@ -1379,6 +1397,28 @@ class DaemonEngine:
         """获取运行状态"""
         summary = self.history.summary(7)
         cfg = self._eurusd_fuse_cfg()
+        # EURUSD 概况(总览页卡片): 自动下单开关 + 在途持仓
+        autotrade = False
+        positions = []
+        try:
+            from src.utils.dashboard_settings import load as ui_load
+            autotrade = bool((ui_load().get("mt4_relay") or {}).get("enabled", False))
+        except Exception:
+            pass
+        try:
+            from src.strategy.position_manager import PositionManager
+            positions = PositionManager().load_all() or []
+        except Exception:
+            positions = []
+        eur_positions = []
+        for p in positions:
+            try:
+                eur_positions.append({
+                    "direction": getattr(p, "direction", ""),
+                    "entry": getattr(p, "entry_price", None),
+                })
+            except Exception:
+                pass
         return {
             "running": self._running,
             "eval_count": self._eval_count,
@@ -1399,5 +1439,9 @@ class DaemonEngine:
                 "cooldown_hours": int(cfg.get("fuse_cooldown_hours", 48)),
                 "loss_streak": dict(self._fuse["loss_streak"]),
                 "paused_until": dict(self._fuse["paused_until"]),
+            },
+            "eurusd": {
+                "autotrade": autotrade,
+                "positions": eur_positions,
             },
         }

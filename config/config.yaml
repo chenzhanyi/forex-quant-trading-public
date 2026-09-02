@@ -43,7 +43,7 @@ gold:
   max_open: 2                       # 同时在途单量上限
   session_only: true                # 仅欧美盘
   auto_trade: false                 # 是否接入MT4自动下单
-  lots: 0.01                        # 单笔手数 (0.01手=1盎司, $1波动=$1盈亏)
+  lots: 0.1                         # 单笔手数 (券商合约: 0.1手=1盎司, $1波动=$1盈亏)
   # 熔断: 同方向连续止损N次 → 暂停该方向(回测: 7-17~8-03趋势反转期6连SL, 熔断后收益翻倍)
   fuse_enabled: true
   fuse_max_loss_streak: 2           # 连续N次止损触发熔断
@@ -53,6 +53,32 @@ gold:
   # 保本锁定容差: SL 锁在入场价盈利侧 N 点(黄金 0.1美元=1点, 建议2~10)
   # 覆盖不同平台滑点/点差 — 打平结算时保留这 N 点微利
   be_lock_buffer_points: 3
+
+# ---------- 澳元 AUD/USD ----------
+# 策略 = EUR/USD 六条件法移植, 按 170 天回测(实盘口径: 限3单+10天结算窗口)调参为方案A
+# 回测: 84单 58%胜率 +533p (+94p/月); 40天: 28单 65% +314p; 熔断贡献+349p
+# 关键差异: TP40对澳元偏大(波动低), SL2.5会让RR门槛拦死一半信号 → 2.0倍+TP35
+aud:
+  enabled: false                    # 澳元模块总开关
+  symbol: "AUD/USD"
+  trend_sma: 200                    # H4 200SMA 趋势
+  sl_atr_mult: 2.0                  # 止损: H4 ATR 倍数 (方案A)
+  tp_pips: 35                       # 固定止盈 pips (方案A)
+  session_start: 8                  # 北京时间时段起点(悉尼盘+伦敦盘 — 澳元活跃时段)
+  session_end: 16                   # 北京时间时段终点
+  max_open: 3                       # 同方向同时在途单量上限(方案A限3)
+  auto_trade: false                 # 是否接入MT4自动下单
+  lots: 0.01                        # 单笔手数
+  # 熔断: 同方向连续止损N次 → 暂停该方向(回测: 方案A贡献+349p, 关键风控)
+  fuse_enabled: true
+  fuse_max_loss_streak: 2           # 连续N次止损触发熔断
+  fuse_cooldown_hours: 48           # 熔断冷却小时
+  # 横盘+重复价位过滤(方案A回测参数)
+  flat_range: 40                    # 近12根H4区间 <N pips 视为横盘(横盘期禁同价位扎堆)
+  dedup_pips: 15                    # 48h内同方向距上一信号 <N pips 且横盘 → 跳过
+  # 反转自动平仓: H1反转形态+收盘破200SMA+浮盈≥0 → 按当前价平仓(回测各限单下均正增益)
+  reversal_tf: "H1"
+  reversal_min_profit_pips: 0
 
 # ---------- 锁利追踪（可开关, 默认关闭）----------
 # 浮盈达止盈的 trigger 比例 → 止损移到锁利位置 + 止盈翻倍

@@ -36,6 +36,18 @@ EURUSD_KEYWORDS = [
     "geopolitical", "地缘",
 ]
 
+# 黄金相关关键词（扩展: 基本面同时覆盖三品种）
+GOLD_KEYWORDS = [
+    "gold", "XAU", "bullion", "gold price", "precious metal",
+    "黄金", "金价", "贵金属",
+]
+
+# 澳元相关关键词
+AUD_KEYWORDS = [
+    "AUD/USD", "AUD", "Australian dollar", "RBA", "Australia",
+    "澳元", "澳洲", "澳联储",
+]
+
 # 外汇 RSS Feed 源（按可用性排序）
 FOREX_RSS_FEEDS = [
     # 外汇专项（需代理，但覆盖最精准）
@@ -99,6 +111,11 @@ class NewsCollector:
             return net.get("http", "")
         return None
 
+    def _proxy_candidates(self) -> List[Optional[str]]:
+        """代理候选序列: 默认通道(Clash/直连) → 专用代理(中控台 mode 决定)"""
+        from src.utils.network import get_proxy_candidates
+        return get_proxy_candidates(default_proxy=self._get_proxy())
+
     def fetch_feeds(self, feed_urls: Optional[List[str]] = None) -> List[Dict]:
         """采集 RSS Feed 中的 EUR/USD 相关文章
 
@@ -114,16 +131,19 @@ class NewsCollector:
         articles = []
         now_iso = datetime.now(timezone.utc).isoformat()
 
-        proxy = self._get_proxy()
-        ctx = _ProxyContext(proxy) if proxy else _NoProxyContext()
-
         for url in feed_urls:
-            try:
-                with ctx:
-                    feed = feedparser.parse(url)
+            # 解析失败时按候选序列切换代理重试(默认通道 → 专用代理)
+            for proxy in self._proxy_candidates():
+                ctx = _ProxyContext(proxy) if proxy else _NoProxyContext()
+                try:
+                    with ctx:
+                        feed = feedparser.parse(url)
+                except Exception as e:
+                    logger.warning(f"RSS 源 {url} 采集失败: {str(e)[:60]}")
+                    continue  # 换代理重试
                 if feed.bozo and not feed.entries:
-                    logger.warning(f"RSS 源解析失败: {url}")
-                    continue
+                    logger.warning(f"RSS 源解析失败{'(专用代理)' if proxy else ''}: {url}")
+                    continue  # 换代理重试
 
                 for entry in feed.entries:
                     title = entry.get("title", "")
@@ -139,10 +159,10 @@ class NewsCollector:
                             "summary": summary.strip()[:500],
                             "source": url,
                             "collected_at": now_iso,
+                            "tags": ",".join(self._match_tags(text)),
                         })
                 logger.info(f"✅ RSS {url}: {len([a for a in articles if a['source']==url])} 条相关")
-            except Exception as e:
-                logger.warning(f"RSS 源 {url} 采集失败: {e}")
+                break  # 成功, 不再换代理
 
         return articles
 
@@ -174,6 +194,19 @@ class NewsCollector:
         """检查文本是否与 EUR/USD 相关"""
         text_lower = text.lower()
         return any(kw.lower() in text_lower for kw in EURUSD_KEYWORDS)
+
+    @staticmethod
+    def _match_tags(text: str) -> list:
+        """标记文章涉及哪些品种: eur/gold/aud(可多标签)"""
+        text_lower = text.lower()
+        tags = []
+        if any(kw.lower() in text_lower for kw in EURUSD_KEYWORDS):
+            tags.append("eur")
+        if any(kw.lower() in text_lower for kw in GOLD_KEYWORDS):
+            tags.append("gold")
+        if any(kw.lower() in text_lower for kw in AUD_KEYWORDS):
+            tags.append("aud")
+        return tags
 
 
 if __name__ == "__main__":

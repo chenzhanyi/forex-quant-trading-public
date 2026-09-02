@@ -19,6 +19,10 @@ from src.analysis.indicators import Indicators
 from src.data_collection.oanda import OandaClient
 from src.utils.config_loader import config
 
+BACKTEST_SYMBOL = None  # 回测品种(如 AUD_USD), None=配置默认(EUR_USD)
+# pip 价格换算: EUR/AUD类=10000, JPY类=100 (USDJPY 1pip=0.01)
+PIP_SCALE = 10000
+
 ind = Indicators(); o = OandaClient()
 
 # 配置
@@ -39,6 +43,24 @@ TRAIL_BARS = 480      # 追踪窗口 (5天, TP翻倍需要更长观察)
 DEDUP_PIPS = 0.0      # 重复价位: 距48h内上一个同向信号 <N pips → 跳过(防同价位扎堆开仓)
 FLAT_RANGE = 0.0      # 横盘区间: 近24根H4区间 <N pips → 跳过
 BEAR_BAR = 0.0        # 大阴/大阳动能: 近6根H4出现 >N pips 反向实体 → 跳过
+
+# 趋势质量过滤 (1=开启, 见 --struct / --h1guard)
+STRUCT_GUARD = 0      # 结构确认: 近12根H4低点低于前12根低点(做多, LL结构破坏) → 跳过
+H1_GUARD = 0          # H1 200SMA哨兵: H1周期收盘方向与开仓方向分歧 → 跳过(观望)
+
+# 降级模式: 趋势转弱(结构破坏或H1分歧)时不拦信号, 降级处理 (见 --degrade)
+#   half_lot = 手数减半(pip×0.5)   tight_sl = 止损收紧(ATR×2.5→1.5)
+#   both = 两者同时
+DEGRADE_MODE = ""     # ""=关闭
+SL_TIGHT_MULT = 1.5   # 降级单的 ATR 止损倍数
+
+# 同方向最大同时持仓(0=不限) — 模拟实盘限单机制, 超限信号跳过 (见 --maxpos)
+MAX_POS = 0
+
+# 结算窗口(M15根数): 实盘持仓不限时长, 持有到 SL/TP/反转触发 —
+# 窗口过短会把"仍在持仓的单"按截断收盘价结算, 与实盘结果偏差大(低波动品种尤其)
+# 默认192(48h)保持历史口径; 建议长窗口回测用 --maxbars=960(10天)/1920(20天)
+SETTLE_BARS = 192
 
 # 反转出场模块 (--exit-rev=H4/H1/M15 或组合, 与实盘出场模块同款双重确认)
 # 反转形态 + 收盘突破该周期200SMA + 浮盈>=min → 按当前收盘价平仓
@@ -110,7 +132,7 @@ def sim_reversal_exit(m15, tf_map, i, direction, entry, sl, tp,
 
     rev_tfs: 周期列表(单周期或多时段共振, 全部满足才触发)
     confirm: 每个周期需连续 N+1 根自身K线确认(0=1根即触发)
-    返回 (oc, pip): oc ∈ SL/TP/REV/OPEN
+    返回 (oc, pip, exit_time): oc ∈ SL/TP/REV/OPEN, exit_time=平仓bar时间(限单模拟用)
     """
     is_sell = direction == "SELL"
     # 每周期状态: {pos: 上次检测的周期bar位置, count: 连续确认数, ok: 当前满足}
@@ -124,14 +146,14 @@ def sim_reversal_exit(m15, tf_map, i, direction, entry, sl, tp,
         # SL/TP 优先(与固定止盈分支同规则: SL 先判)
         if is_sell:
             if h >= sl:
-                return "SL", round((entry - sl) * 10000, 1)
+                return "SL", round((entry - sl) * PIP_SCALE, 1), dt
             if l <= tp:
-                return "TP", round((entry - tp) * 10000, 1)
+                return "TP", round((entry - tp) * PIP_SCALE, 1), dt
         else:
             if l <= sl:
-                return "SL", round((sl - entry) * 10000, 1)
+                return "SL", round((sl - entry) * PIP_SCALE, 1), dt
             if h >= tp:
-                return "TP", round((tp - entry) * 10000, 1)
+                return "TP", round((tp - entry) * PIP_SCALE, 1), dt
 
         # 各周期反转检测(仅在该周期出现新K线时重新检测)
         all_ok = True
@@ -161,21 +183,21 @@ def sim_reversal_exit(m15, tf_map, i, direction, entry, sl, tp,
             continue
 
         # 浮盈判定
-        float_pips = (entry - c) * 10000 if is_sell else (c - entry) * 10000
+        float_pips = (entry - c) * PIP_SCALE if is_sell else (c - entry) * PIP_SCALE
         if float_pips < min_profit_pips:
             continue
-        return "REV", round(float_pips, 1)
+        return "REV", round(float_pips, 1), dt
 
     # 窗口走完未出场 → 按最新收盘结算(OPEN)
     last_c = float(m15.iloc[end - 1]['close'])
-    pips = (entry - last_c) * 10000 if is_sell else (last_c - entry) * 10000
-    return "OPEN", round(pips, 1)
+    pips = (entry - last_c) * PIP_SCALE if is_sell else (last_c - entry) * PIP_SCALE
+    return "OPEN", round(pips, 1), m15.iloc[end - 1].name
 
 
 def sim_simple_trail(m15, i, direction, entry, sl, tp, trigger, lock_pips, tp_mult, max_bars):
     """简单锁利追踪:
       浮盈达止盈的 trigger 比例 → 止损移到赚 lock_pips 点, 止盈翻倍(tp_mult)
-    返回 (oc, pip): oc ∈ SL/TP/OPEN
+    返回 (oc, pip, exit_time): oc ∈ SL/TP/OPEN, exit_time=平仓bar时间(限单模拟用)
     """
     cur_sl, cur_tp = sl, tp
     trailed = False
@@ -188,57 +210,99 @@ def sim_simple_trail(m15, i, direction, entry, sl, tp, trigger, lock_pips, tp_mu
 
         if direction == "BUY":
             if l <= cur_sl:
-                return "SL", round((cur_sl - entry) * 10000, 1)
+                return "SL", round((cur_sl - entry) * PIP_SCALE, 1), b.name
             if h >= cur_tp:
-                return "TP", round((cur_tp - entry) * 10000, 1)
+                return "TP", round((cur_tp - entry) * PIP_SCALE, 1), b.name
             if not trailed and c - entry >= tp_move * trigger:
                 trailed = True
-                cur_sl = entry + lock_pips / 10000
+                cur_sl = entry + lock_pips / PIP_SCALE
                 cur_tp = entry + tp_move * tp_mult
         else:
             if h >= cur_sl:
-                return "SL", round((entry - cur_sl) * 10000, 1)
+                return "SL", round((entry - cur_sl) * PIP_SCALE, 1), b.name
             if l <= cur_tp:
-                return "TP", round((entry - cur_tp) * 10000, 1)
+                return "TP", round((entry - cur_tp) * PIP_SCALE, 1), b.name
             if not trailed and entry - c >= tp_move * trigger:
                 trailed = True
-                cur_sl = entry - lock_pips / 10000
+                cur_sl = entry - lock_pips / PIP_SCALE
                 cur_tp = entry - tp_move * tp_mult
 
     # 窗口走完未出场 → 按最新收盘结算(记为 OPEN, 不计入胜负)
     last_c = float(m15.iloc[end - 1]['close'])
-    pips = (last_c - entry) * 10000 if direction == "BUY" else (entry - last_c) * 10000
-    return "OPEN", round(pips, 1)
+    pips = (last_c - entry) * PIP_SCALE if direction == "BUY" else (entry - last_c) * PIP_SCALE
+    return "OPEN", round(pips, 1), m15.iloc[end - 1].name
 
 
-def load_data(days):
+def load_data(days, symbol=None):
+    """加载回测数据: 本地 parquet 优先; 指定品种(如 AUD_USD)时从 OANDA 分页拉取
+
+    OANDA count 上限 5000, M15 超 52 天需分页(from_time 向前翻页)。
+    拉取走专用代理(未运行/未配置时自动退回默认通道)。
+    """
+    sym = symbol or o.symbol
     cutoff = pd.Timestamp.now(tz='UTC') - timedelta(days=days)
-    m15 = o.load_parquet("M15"); m15 = m15[m15.index >= cutoff]
-    h1 = o.load_parquet("H1")
-    h1_cut = h1[h1.index >= cutoff - timedelta(days=60)]
-    h4 = o.load_parquet("H4")
-    h4_cut = h4[h4.index >= cutoff - timedelta(days=60)]
-    return m15, h1_cut, h4_cut
+
+    def fetch_tf(tf, minutes, warmup_days=0):
+        """warmup_days: 数据起点往前多拉, 保证回测起点处指标(SMA200/ATR14)已预热"""
+        start = cutoff - timedelta(days=warmup_days)
+        # 本地优先(该品种 parquet 已存在时直接读, 避免重复拉取)
+        try:
+            fpath = o.data_dir / tf / f"{sym}_{tf}.parquet"
+            if fpath.exists():
+                df = pd.read_parquet(fpath)
+                if not df.empty:
+                    return df[df.index >= start]
+        except Exception:
+            pass
+        # OANDA 分页拉取
+        client = OandaClient(use_proxy=True)
+        candles = []
+        cur_from = start.to_pydatetime()
+        while True:
+            batch = client.fetch_candles(tf, 5000, from_time=cur_from, symbol=sym)
+            if not batch:
+                break
+            candles.extend(batch)
+            if len(batch) < 5000:
+                break
+            cur_from = pd.Timestamp(batch[-1]["time"]).to_pydatetime() + timedelta(minutes=minutes)
+        if not candles:
+            raise RuntimeError(f"{sym} {tf} 无数据")
+        df = pd.DataFrame(candles)
+        df["time"] = pd.to_datetime(df["time"])
+        df.set_index("time", inplace=True)
+        if df.index.tz is None:
+            df.index = df.index.tz_localize("UTC")
+        return df[~df.index.duplicated(keep="last")].sort_index()
+
+    # H1/H4 预热60天(SMA200/ATR14); M15 预热2天(EMA/RSI), 裁回 cutoff 保证回测起点对齐
+    m15 = fetch_tf("M15", 15, warmup_days=2)
+    m15 = m15[m15.index >= cutoff]
+    h1 = fetch_tf("H1", 60, warmup_days=60)
+    h4 = fetch_tf("H4", 240, warmup_days=60)
+    print(f"[数据] {sym} M15 {len(m15)}根 / H1 {len(h1)}根 / H4 {len(h4)}根")
+    return m15, h1, h4
 
 
 def run(m15, h1, h4, session_filter=True):
     h4 = ind.add_sma(h4, 200); h4 = ind.add_atr(h4, 14)
     m15 = ind.add_ema(m15, 5); m15 = ind.add_ema(m15, 15); m15 = ind.add_rsi(m15, 14)
-    # 反转出场用: 各周期 200SMA 预计算(检测时只做时间对齐切片)
+    # 反转出场/H1哨兵用: 各周期 200SMA 预计算(检测时只做时间对齐切片)
     tf_map = {}
+    h1_s = ind.add_sma(h1, 200) if (EXIT_REV_TF or H1_GUARD) else None
+    m15_s = None
     if EXIT_REV_TF:
-        h1_s = ind.add_sma(h1, 200)
         m15_s = ind.add_sma(m15, 200)
         tf_map = {"H4": h4, "H1": h1_s, "M15": m15_s}
         rev_tfs = [t.strip() for t in EXIT_REV_TF.split("+") if t.strip()]
     """测试H4 200SMA方向: 只做顺势"""
-    h4_dir = "DN" if float(h4.iloc[-1]['close']) < float(h4.iloc[-1]['SMA200']) else "UP"
     trades = []
 
     # 可选过滤: 重复价位/横盘区间/大阴动能 (0=关闭)
     last_entry = {}  # {direction: (ts, price)} 上一个未被过滤的同向信号
     loss_streak = {"SELL": 0, "BUY": 0}
     paused_until = {"SELL": None, "BUY": None}
+    active_until = {"SELL": [], "BUY": []}  # 各方向在持仓的平仓时间(限单模拟)
 
     for i in range(20, len(m15)):
         bar = m15.iloc[i]; p = float(bar['close']); dt = bar.name
@@ -247,21 +311,23 @@ def run(m15, h1, h4, session_filter=True):
         if len(h4b) == 0: continue
         h4_sma = float(h4b.iloc[-1]['SMA200'])
         h4_atr = float(h4b.iloc[-1].get('ATR', 0.002))
-        if h4_atr == 0: continue
+        # 挡 0/nan/负值 — 指标预热不足时跳过(防 nan 止损导致永不结算的幽灵持仓)
+        if not (h4_atr > 0): continue
+        if not (h4_sma > 0): continue
 
         # ── 横盘判定(近12根H4区间 < FLAT_RANGE): 与重复价位过滤联动 ──
         # 横盘期禁止同价位扎堆开仓; 趋势期允许顺势加仓
         flat_now = False
         if FLAT_RANGE > 0 and len(h4b) >= 12:
             w12 = h4b.iloc[-12:]
-            flat_now = (w12['high'].max() - w12['low'].min()) * 10000 < FLAT_RANGE
+            flat_now = (w12['high'].max() - w12['low'].min()) * PIP_SCALE < FLAT_RANGE
         # ── 大阴/大阳动能过滤: 近6根H4内出现 >N pips 大阴(做多)/大阳(做空) → 跳过 ──
         bear_body = 0.0
         bull_body = 0.0
         if BEAR_BAR > 0 and len(h4b) >= 6:
             w6 = h4b.iloc[-6:]
-            bear_body = float((w6['open'] - w6['close']).clip(lower=0).max() * 10000)
-            bull_body = float((w6['close'] - w6['open']).clip(lower=0).max() * 10000)
+            bear_body = float((w6['open'] - w6['close']).clip(lower=0).max() * PIP_SCALE)
+            bull_body = float((w6['close'] - w6['open']).clip(lower=0).max() * PIP_SCALE)
 
         e5 = float(bar['EMA5']); e15 = float(bar['EMA15'])
         rsi = float(bar['RSI14'])
@@ -280,6 +346,28 @@ def run(m15, h1, h4, session_filter=True):
             if is_sell and p >= h4_sma: continue
             if not is_sell and p <= h4_sma: continue
 
+            # 趋势质量: 结构确认 + H1哨兵 — 默认拦截; --degrade 模式下降级放行
+            # (H4说多但H1已转空 / 均线向上但低点结构破坏 = 下跌初段典型特征)
+            degraded = False
+            if H1_GUARD and h1_s is not None:
+                h1b = h1_s[h1_s.index <= dt]
+                # H1 数据不足时哨兵不生效(放行) — 实盘 H1 始终有数据, 回测早期不足不拦
+                if len(h1b) > 0:
+                    h1c = float(h1b.iloc[-1]['close'])
+                    h1s = float(h1b.iloc[-1]['SMA200'])
+                    if (not is_sell and h1c <= h1s) or (is_sell and h1c >= h1s):
+                        if not DEGRADE_MODE:
+                            continue
+                        degraded = True
+
+            if STRUCT_GUARD and len(h4b) >= 24:
+                rec = h4b.iloc[-12:]; prev = h4b.iloc[-24:-12]
+                if (not is_sell and float(rec['low'].min()) < float(prev['low'].min())) or \
+                   (is_sell and float(rec['high'].max()) > float(prev['high'].max())):
+                    if not DEGRADE_MODE:
+                        continue
+                    degraded = True
+
             # 大阴/大阳动能过滤
             if BEAR_BAR > 0 and not is_sell and bear_body > BEAR_BAR: continue
             if BEAR_BAR > 0 and is_sell and bull_body > BEAR_BAR: continue
@@ -289,7 +377,7 @@ def run(m15, h1, h4, session_filter=True):
             if DEDUP_PIPS > 0 and (flat_now or FLAT_RANGE <= 0):
                 prev = last_entry.get(direction)
                 if prev and (dt - prev[0]) <= pd.Timedelta(hours=48) and \
-                   abs(p - prev[1]) * 10000 < DEDUP_PIPS:
+                   abs(p - prev[1]) * PIP_SCALE < DEDUP_PIPS:
                     continue
 
             # EMA
@@ -325,50 +413,79 @@ def run(m15, h1, h4, session_filter=True):
             # 时段
             if session_filter and not _in_session(hour_cst, SESSION_START, SESSION_END): continue
 
-            # SL/TP
+            # SL/TP (降级单: tight_sl/both 模式收紧止损)
+            sl_mult = SL_ATR_MULT
+            if degraded and DEGRADE_MODE in ("tight_sl", "both"):
+                sl_mult = SL_TIGHT_MULT
             if is_sell:
-                sl = p + h4_atr * SL_ATR_MULT
-                tp = p - TP_PIPS / 10000
+                sl = p + h4_atr * sl_mult
+                tp = p - TP_PIPS / PIP_SCALE
             else:
-                sl = p - h4_atr * SL_ATR_MULT
-                tp = p + TP_PIPS / 10000
+                sl = p - h4_atr * sl_mult
+                tp = p + TP_PIPS / PIP_SCALE
 
-            sl_pips = round(h4_atr * SL_ATR_MULT * 10000, 1)
+            sl_pips = round(h4_atr * sl_mult * PIP_SCALE, 1)
             if TP_PIPS / sl_pips < RR_MIN: continue
+
+            # 同方向持仓上限(模拟实盘限单机制, 0=不限): 超限信号跳过
+            if MAX_POS > 0:
+                active_until[direction] = [t for t in active_until[direction] if t > dt]
+                if len(active_until[direction]) >= MAX_POS:
+                    continue
 
             # 通过全部入场条件 → 记录为"上一个未被过滤的同向信号"(48h基准)
             if DEDUP_PIPS > 0:
                 last_entry[direction] = (dt, p)
 
-            # 结果（反转出场 / 简单锁利追踪 / 固定止盈）
+            # 结果（反转出场 / 简单锁利追踪 / 固定止盈）— 均返回 (oc, pip, exit_time)
             if EXIT_REV_TF:
-                oc, pip = sim_reversal_exit(
+                oc, pip, exit_t = sim_reversal_exit(
                     m15, tf_map, i, direction, p, sl, tp,
-                    rev_tfs, EXIT_REV_MIN_PROFIT, EXIT_REV_CONFIRM)
+                    rev_tfs, EXIT_REV_MIN_PROFIT, EXIT_REV_CONFIRM, max_bars=SETTLE_BARS)
                 resolved = oc != "OPEN"
             elif TRAIL_TRIGGER > 0:
-                oc, pip = sim_simple_trail(
+                oc, pip, exit_t = sim_simple_trail(
                     m15, i, direction, p, sl, tp,
                     TRAIL_TRIGGER, LOCK_PIPS, TP_MULT, TRAIL_BARS)
                 resolved = oc in ("SL", "TP")
             else:
-                after = m15.iloc[i+1:i+193]
+                after = m15.iloc[i+1:i+1+SETTLE_BARS]
                 if len(after) < 50: continue
-                hit_sl = (is_sell and any(float(b['high']) >= sl for _, b in after.iterrows())) or \
-                         (not is_sell and any(float(b['low']) <= sl for _, b in after.iterrows()))
-                hit_tp = not hit_sl and ((is_sell and any(float(b['low']) <= tp for _, b in after.iterrows())) or \
-                                         (not is_sell and any(float(b['high']) >= tp for _, b in after.iterrows())))
-                if hit_tp:
-                    oc, pip = "TP", TP_PIPS
-                elif hit_sl:
-                    oc, pip = "SL", -sl_pips
+                # 逐bar模拟: SL 先判(与实盘同规则), 记录平仓时间
+                oc, exit_t = "OPEN", after.index[-1]
+                for _, b in after.iterrows():
+                    if is_sell:
+                        if float(b['high']) >= sl:
+                            oc, exit_t = "SL", b.name
+                            break
+                        if float(b['low']) <= tp:
+                            oc, exit_t = "TP", b.name
+                            break
+                    else:
+                        if float(b['low']) <= sl:
+                            oc, exit_t = "SL", b.name
+                            break
+                        if float(b['high']) >= tp:
+                            oc, exit_t = "TP", b.name
+                            break
+                if oc == "TP":
+                    pip = TP_PIPS
+                elif oc == "SL":
+                    pip = -sl_pips
                 else:
                     # 未结算: 按窗口末收盘价计浮动盈亏 — 必须计入统计,
                     # 否则横盘慢单被静默丢弃导致胜率虚高(幸存者偏差)
-                    oc = "OPEN"
                     last_c = float(after.iloc[-1]['close'])
-                    pip = (last_c - p) * 10000 if not is_sell else (p - last_c) * 10000
+                    pip = (last_c - p) * PIP_SCALE if not is_sell else (p - last_c) * PIP_SCALE
                 resolved = oc != "OPEN"
+
+            # 记录持仓占用(限单模拟)
+            if MAX_POS > 0:
+                active_until[direction].append(exit_t)
+
+            # 降级单(half_lot/both): 手数减半 → pip 收益减半
+            if degraded and DEGRADE_MODE in ("half_lot", "both"):
+                pip = pip * 0.5
 
             # 熔断状态更新
             if FUSE_MAX_LOSS_STREAK > 0:
@@ -383,7 +500,8 @@ def run(m15, h1, h4, session_filter=True):
             trades.append({
                 'time': str(dt)[:16], 'dir': direction,
                 'entry': p, 'sl': sl, 'sl_p': sl_pips, 'tp': tp, 'tp_p': TP_PIPS,
-                'rr': round(TP_PIPS/sl_pips, 1), 'oc': oc, 'pip': round(pip, 1)
+                'rr': round(TP_PIPS/sl_pips, 1), 'oc': oc, 'pip': round(pip, 1),
+                'deg': degraded,
             })
 
     # 不去重: 实盘每个信号都可能开一单, 回测须如实反映信号频率
@@ -414,6 +532,16 @@ if __name__ == "__main__":
         if a.startswith("--exit-rev="): EXIT_REV_TF = a.split("=")[1].upper()  # 反转出场: H4/H1/M15/组合
         if a.startswith("--exit-rev-min="): EXIT_REV_MIN_PROFIT = float(a.split("=")[1])
         if a.startswith("--exit-rev-confirm="): EXIT_REV_CONFIRM = int(a.split("=")[1])
+        if a.startswith("--struct="): STRUCT_GUARD = int(a.split("=")[1])      # 结构确认过滤
+        if a.startswith("--h1guard="): H1_GUARD = int(a.split("=")[1])         # H1 200SMA哨兵
+        if a.startswith("--degrade="): DEGRADE_MODE = a.split("=")[1]          # 降级: half_lot/tight_sl/both
+        if a.startswith("--maxpos="): MAX_POS = int(a.split("=")[1])           # 同方向持仓上限(0=不限)
+        if a.startswith("--symbol="): BACKTEST_SYMBOL = a.split("=")[1].upper()  # 回测品种
+    if BACKTEST_SYMBOL and BACKTEST_SYMBOL.endswith("JPY"):
+        PIP_SCALE = 100  # JPY 类品种 1 pip = 0.01
+
+        if a.startswith("--maxbars="): SETTLE_BARS = int(a.split("=")[1])      # 结算窗口(M15根数)
+        if a.startswith("--slmult="): SL_ATR_MULT = float(a.split("=")[1])     # ATR止损倍数
 
     # RSI 默认跟随 config.yaml(与实盘一致), --rsi= 可显式覆盖
     if not any(a.startswith("--rsi=") for a in sys.argv[1:]):
@@ -434,7 +562,7 @@ if __name__ == "__main__":
     if LOCK_RATIO > 0:
         LOCK_PIPS = TP_PIPS * LOCK_RATIO   # 锁利 = 止盈 × 比例
 
-    m15, h1, h4 = load_data(days)
+    m15, h1, h4 = load_data(days, symbol=BACKTEST_SYMBOL)
     trades = run(m15, h1, h4)
 
     wins = sum(1 for t in trades if t['oc'] == 'TP')
@@ -454,6 +582,9 @@ if __name__ == "__main__":
     if DEDUP_PIPS: flt += f" | 重复价位>{DEDUP_PIPS:.0f}p"
     if FLAT_RANGE: flt += f" | 横盘<{FLAT_RANGE:.0f}p"
     if BEAR_BAR: flt += f" | 大阴/大阳>{BEAR_BAR:.0f}p"
+    if STRUCT_GUARD: flt += " | 结构确认"
+    if H1_GUARD: flt += " | H1哨兵"
+    if DEGRADE_MODE: flt += f" | 降级模式({DEGRADE_MODE})"
     print(f"6条件叠加法回测 (近{days}天) 时段: {SESSION_START:02d}:00-{SESSION_END:02d}:00 北京时间 | R:R≥{RR_MIN} | RSI{RSI_LO}-{RSI_HI} | {mode}{flt}")
     print(f"{'时间':<18} {'方向':<5} {'入场':>8} {'SLp':>5} {'TPp':>4} {'R:R':>4} {'结果':>5} {'Pip':>7}")
     print("-" * 65)
@@ -462,6 +593,12 @@ if __name__ == "__main__":
     print("-" * 65)
     sn = sum(1 for t in trades if t['dir'] == 'SELL'); bn = len(trades) - sn
     print(f"总计: {len(trades)}信号({sn}S/{bn}B) {wins}胜{losses}负 {wr:.0f}% {total_pip:+.0f}pips")
+    if DEGRADE_MODE:
+        degs = [t for t in trades if t.get('deg')]
+        d_w = sum(1 for t in degs if t['oc'] == 'TP')
+        d_l = sum(1 for t in degs if t['oc'] == 'SL')
+        d_pip = sum(t['pip'] for t in degs)
+        print(f"      其中 {len(degs)} 单降级(趋势转弱) {d_w}胜{d_l}负 {d_pip:+.0f}pips")
     if revs:
         rev_pip = sum(t['pip'] for t in trades if t['oc'] == 'REV')
         print(f"      其中 {revs} 单反转出场(浮盈保本) 平均 {rev_pip/revs:+.0f}pips")

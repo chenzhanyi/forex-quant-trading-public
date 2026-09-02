@@ -37,6 +37,12 @@ LONG_TERM_KEYWORDS = [
     # 长期经济结构
     r"inflation trend", r"通胀趋势", r"deflation", r"通缩",
     r"recession", r"衰退", r"economic growth", r"经济增长",
+    # 黄金长期 (央行购金/美元结构/避险)
+    r"central bank gold", r"gold reserve", r"央行购金", r"购金",
+    r"gold demand", r"de-dollarization", r"去美元化", r"safe haven", r"避险",
+    # 澳元长期 (RBA政策/中国需求/大宗商品)
+    r"RBA", r"澳联储", r"Reserve Bank of Australia", r"iron ore", r"铁矿石",
+    r"commodity supercycle", r"大宗商品", r"China demand", r"中国需求",
     r"fiscal policy", r"财政政策",
     r"de-dollarization", r"去美元化",
     r"supply chain", r"供应链",
@@ -58,6 +64,12 @@ MEDIUM_TERM_KEYWORDS = [
     # 央行官员讲话
     r"speech", r"讲话", r"remarks", r"发言",
     r"minutes", r"会议纪要", r"纪要",
+    # 黄金中期 (金价驱动数据)
+    r"gold price", r"金价", r"bullion", r"real yield", r"实际利率",
+    r"ETF flows", r"gold holdings", r"黄金ETF",
+    # 澳元中期 (澳洲数据)
+    r"employment change", r"澳洲就业", r"AU CPI", r"澳洲通胀",
+    r"trade balance", r"贸易帐", r"business confidence", r"NAB",
     r"testimony", r"听证",
     # 债务 / 信用
     r"debt", r"债务", r"deficit", r"赤字",
@@ -156,6 +168,7 @@ class FundamentalsAnalyzer:
                 "published": str(row.get("published", "")),
                 "collected_at": str(row.get("collected_at", "")),
                 "category": category,
+                "tags": str(row.get("tags", "")),  # eur/gold/aud, 逗号分隔
             }
             result[category].append(entry)
 
@@ -201,15 +214,13 @@ class FundamentalsAnalyzer:
                 with open(path) as f:
                     existing = json.load(f)
 
-            all_entries = existing + entries
-            # 去重（按标题）
-            seen = set()
-            unique = []
-            for e in all_entries:
+            # 合并去重（按标题）— 新数据覆盖旧数据(补 tags 等新字段)
+            merged = {e.get("title", ""): e for e in existing if e.get("title")}
+            for e in entries:
                 key = e.get("title", "")
-                if key and key not in seen:
-                    seen.add(key)
-                    unique.append(e)
+                if key:
+                    merged[key] = e  # 新采集覆盖: 补 tags
+            unique = list(merged.values())
 
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(unique, f, ensure_ascii=False, indent=2)
@@ -269,14 +280,18 @@ class FundamentalsAnalyzer:
             label = "中性"
         return {"score": round(score, 2), "label": label, "bullish_count": bull, "bearish_count": bear}
 
-    def generate_summary(self, days: int = 7) -> str:
-        """生成近 N 天的基本面摘要"""
-        lines = []
-        lines.append(f"📊 EUR/USD 基本面摘要（近{days}天）")
+    def generate_summary(self, days: int = 7, symbol: str = "EUR/USD") -> str:
+        """生成近 N 天的基本面摘要(支持三品种)
 
-        # 扫描最近 days 天的新闻
-        from datetime import timedelta
-        cutoff = datetime.now() - timedelta(days=days)
+        symbol: "EUR/USD" / "XAU/USD" / "AUD/USD" — 按新闻 tags 过滤;
+                EUR 兼容历史数据(无 tags 字段视为 eur)。
+        """
+        tag_map = {"EUR/USD": "eur", "XAU/USD": "gold", "AUD/USD": "aud"}
+        want_tag = tag_map.get(symbol, "eur")
+        symbol_label = {"EUR/USD": "💶 EUR/USD", "XAU/USD": "🥇 XAU/USD",
+                        "AUD/USD": "🦘 AUD/USD"}.get(symbol, symbol)
+        lines = []
+        lines.append(f"📊 {symbol_label} 基本面摘要（近{days}天）")
 
         long_events = []
         medium_events = []
@@ -295,7 +310,10 @@ class FundamentalsAnalyzer:
                     continue
 
                 for entry in entries:
-                    published = entry.get("published", entry.get("collected_at", ""))
+                    # 品种过滤: 无tags的历史数据视为eur(兼容旧数据)
+                    tags = set((entry.get("tags") or "").split(",")) if entry.get("tags") else {"eur"}
+                    if want_tag not in tags:
+                        continue
                     if category == "long":
                         long_events.append(entry)
                     else:

@@ -58,10 +58,13 @@ class EconomicCalendar:
         self.data_dir = Path(__file__).resolve().parent.parent.parent / "data" / "calendar"
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
-    def _get_scraper(self):
-        """获取 cloudscraper 实例（绕过 Cloudflare）"""
+    def _get_scraper(self, proxy: Optional[str] = None):
+        """获取 cloudscraper 实例（绕过 Cloudflare）; proxy 为 None 时走默认通道"""
         import cloudscraper
-        return cloudscraper.create_scraper()
+        scraper = cloudscraper.create_scraper()
+        if proxy:
+            scraper.proxies = {"http": proxy, "https": proxy}
+        return scraper
 
     def fetch(self) -> List[Dict]:
         """获取经济日历，JSON 优先，HTML 降级"""
@@ -72,7 +75,12 @@ class EconomicCalendar:
         return self._fetch_html()
 
     def _fetch_json(self) -> List[Dict]:
-        """从 JSON API 获取（带重试 + 指数退避 + 缓存去重）"""
+        """从 JSON API 获取（带重试 + 指数退避 + 缓存去重 + 代理自动切换）
+
+        网络层失败时按中控台模式自动切换专用代理重试(auto: 默认→代理)。
+        """
+        from src.utils.network import get_proxy_candidates
+
         # 1 小时内重复调用直接跳过，避免 429
         cache_marker = self.data_dir / ".json_last_fetch"
         if cache_marker.exists():
@@ -84,55 +92,75 @@ class EconomicCalendar:
             except (ValueError, OSError):
                 pass
 
-        scraper = self._get_scraper()
         max_retries = 3
-        for attempt in range(max_retries):
+        # 外层: 代理候选(默认通道 → 专用代理); 内层: HTTP 重试/429 换 session
+        candidates = get_proxy_candidates()
+        for proxy in candidates:
             try:
-                r = scraper.get(self.JSON_URL, timeout=30)
-                if r.status_code == 200:
-                    raw = r.json()
-                    events = []
-                    for item in raw:
-                        events.append({
-                            "date": item.get("date", ""),
-                            "time": item.get("time", ""),
-                            "currency": item.get("currency", ""),
-                            "event": item.get("event", ""),
-                            "impact": str(item.get("impact", "")),
-                            "previous": item.get("previous", ""),
-                            "forecast": item.get("forecast", ""),
-                            "actual": item.get("actual", ""),
-                        })
-                    cache_marker.write_text(str(time.time()))
-                    logger.info(f"日历(JSON): {len(events)} 条")
-                    return events
-                elif r.status_code == 429:
-                    wait = 2 ** attempt  # 1s / 2s / 4s
-                    logger.warning(f"日历(JSON): HTTP 429 (attempt {attempt + 1}/{max_retries}), {wait}s 后重试")
-                    time.sleep(wait)
-                    scraper = self._get_scraper()  # 换 session
-                else:
-                    logger.warning(f"日历(JSON): HTTP {r.status_code}")
-                    break  # 非 429 不重试
-            except Exception as e:
-                logger.warning(f"日历(JSON): {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
+                scraper = self._get_scraper(proxy)
+            except ImportError:
+                logger.warning("cloudscraper 未安装, 日历 JSON 跳过 (pip3 install cloudscraper)")
+                return []
+            for attempt in range(max_retries):
+                try:
+                    r = scraper.get(self.JSON_URL, timeout=30)
+                    if r.status_code == 200:
+                        raw = r.json()
+                        events = []
+                        for item in raw:
+                            events.append({
+                                "date": item.get("date", ""),
+                                "time": item.get("time", ""),
+                                "currency": item.get("currency", ""),
+                                "event": item.get("event", ""),
+                                "impact": str(item.get("impact", "")),
+                                "previous": item.get("previous", ""),
+                                "forecast": item.get("forecast", ""),
+                                "actual": item.get("actual", ""),
+                            })
+                        cache_marker.write_text(str(time.time()))
+                        logger.info(f"日历(JSON): {len(events)} 条")
+                        return events
+                    elif r.status_code == 429:
+                        wait = 2 ** attempt  # 1s / 2s / 4s
+                        logger.warning(f"日历(JSON): HTTP 429 (attempt {attempt + 1}/{max_retries}), {wait}s 后重试")
+                        time.sleep(wait)
+                        scraper = self._get_scraper(proxy)  # 换 session
+                    else:
+                        logger.warning(f"日历(JSON): HTTP {r.status_code}")
+                        break  # 非 429 不重试
+                except Exception as e:
+                    logger.warning(f"日历(JSON){'[专用代理]' if proxy else ''}: {str(e)[:60]}")
+                    if proxy is None and len(candidates) > 1:
+                        break  # 默认通道网络层失败 → 换专用代理
+                    if attempt < max_retries - 1:
+                        time.sleep(2 ** attempt)
 
         # 请求失败也写入标记，避免 1h 内重复撞 429
         cache_marker.write_text(str(time.time()))
         return []
 
     def _fetch_html(self) -> List[Dict]:
-        """从 HTML 页面解析"""
-        scraper = self._get_scraper()
-        try:
-            r = scraper.get(self.HTML_URL, timeout=30)
-            r.raise_for_status()
-            r.encoding = "ISO-8859-1"
-        except Exception as e:
-            logger.error(f"日历(HTML): {e}")
-            return []
+        """从 HTML 页面解析（默认通道失败自动切专用代理）"""
+        from src.utils.network import get_proxy_candidates
+
+        candidates = get_proxy_candidates()
+        for proxy in candidates:
+            try:
+                scraper = self._get_scraper(proxy)
+            except ImportError:
+                logger.warning("cloudscraper 未安装, 日历 HTML 跳过")
+                return []
+            try:
+                r = scraper.get(self.HTML_URL, timeout=30)
+                r.raise_for_status()
+                r.encoding = "ISO-8859-1"
+                break
+            except Exception as e:
+                logger.error(f"日历(HTML){'[专用代理]' if proxy else ''}: {str(e)[:60]}")
+                if proxy is not None or len(candidates) == 1:
+                    return []
+                continue  # 换专用代理重试
 
         try:
             soup = BeautifulSoup(r.text, "lxml")

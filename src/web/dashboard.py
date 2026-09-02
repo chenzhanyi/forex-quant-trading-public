@@ -77,8 +77,25 @@ def api_signal():
             }
         })
     except Exception as e:
+        # 网络异常(如OANDA EOF)时返回可用结果, 面板不崩 —
+        # daemon每15分钟自动评估会持续重试, 数据恢复后自动正常
         logger.error(f"signal api: {e}")
-        return jsonify({"success": False, "error": str(e)})
+        return jsonify({
+            "success": True,
+            "data": {
+                "can_trade": False,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M GMT+8"),
+                "trend": "网络异常，信号生成失败",
+                "d1_direction": "?",
+                "h4_direction": "?",
+                "direction": "观望",
+                "skip_reason": f"⛔ 网络异常: {str(e)[:60]}（数据恢复后自动正常，可稍后刷新）",
+                "entry_price": None, "stop_loss": None, "tp1": None, "tp2": None,
+                "rr_ratio": None, "lots": None, "max_loss": None,
+                "confidence": 0, "reason": "",
+                "sentiment": {"label": "中性", "score": 0},
+            }
+        })
 
 
 @app.route("/api/entry")
@@ -162,11 +179,14 @@ def api_settings_llm():
 
 @app.route("/api/fundamentals")
 def api_fundamentals():
-    """获取基本面摘要"""
+    """获取基本面摘要 (支持 ?symbol=EUR/USD|XAU/USD|AUD/USD, 默认 EUR/USD)"""
     try:
+        symbol = request.args.get("symbol", "EUR/USD")
+        if symbol not in ("EUR/USD", "XAU/USD", "AUD/USD"):
+            symbol = "EUR/USD"
         fa = FundamentalsAnalyzer()
-        summary = fa.generate_summary(7)
-        return jsonify({"success": True, "data": {"summary": summary}})
+        summary = fa.generate_summary(7, symbol=symbol)
+        return jsonify({"success": True, "data": {"summary": summary, "symbol": symbol}})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
 
@@ -383,6 +403,7 @@ def api_settings_gold():
             if "gold" not in current:
                 current["gold"] = {}
             for key in ["enabled", "max_open", "auto_trade", "sl_atr_mult", "tp_usd", "rsi",
+                        "lots",
                         "fuse_enabled", "fuse_max_loss_streak", "fuse_cooldown_hours",
                         "be_trigger_usd", "be_lock_buffer_points"]:
                 if key in data:
@@ -395,6 +416,35 @@ def api_settings_gold():
         from src.utils.dashboard_settings import load
         settings = load()
         return jsonify({"success": True, "data": settings.get("gold", {})})
+
+
+# ── 澳元设置 ──
+
+@app.route("/api/settings/aud", methods=["GET", "POST"])
+def api_settings_aud():
+    """获取或更新澳元配置"""
+    from src.utils.dashboard_settings import load, save
+
+    if request.method == "POST":
+        try:
+            data = request.get_json(force=True)
+            current = load()
+            if "aud" not in current:
+                current["aud"] = {}
+            for key in ["enabled", "max_open", "auto_trade", "sl_atr_mult", "tp_pips",
+                        "lots",
+                        "fuse_enabled", "fuse_max_loss_streak", "fuse_cooldown_hours",
+                        "flat_range", "dedup_pips"]:
+                if key in data:
+                    current["aud"][key] = data[key]
+            save(current)
+            return jsonify({"success": True, "data": current["aud"]})
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)})
+    else:
+        from src.utils.dashboard_settings import load
+        settings = load()
+        return jsonify({"success": True, "data": settings.get("aud", {})})
 
 
 # ── MT4 远程交易设置 ──
@@ -420,6 +470,57 @@ def api_settings_mt4():
     else:
         settings = load()
         return jsonify({"success": True, "data": settings.get("mt4_relay", {})})
+
+
+@app.route("/api/settings/proxy", methods=["GET", "POST"])
+def api_settings_proxy():
+    """获取/更新 OANDA 专用代理设置 (vless链接 + 使用时机 + 端口)
+
+    POST 保存后自动启停 sing-box 进程:
+      mode=auto/always → 启动专用代理; mode=off → 停止
+    """
+    from src.utils.dashboard_settings import load, save
+    from src.web.proxy_manager import ProxyManager, DEFAULT_PORT
+
+    if request.method == "POST":
+        try:
+            data = request.get_json(force=True)
+            current = load()
+            if "proxy" not in current:
+                current["proxy"] = {}
+            for key in ["mode", "vless_url", "port"]:
+                if key in data:
+                    current["proxy"][key] = data[key]
+            save(current)
+
+            # 按模式启停专用代理进程
+            p = current["proxy"]
+            pm = ProxyManager()
+            mode = p.get("mode", "off")
+            port = int(p.get("port", DEFAULT_PORT))
+            if mode in ("auto", "always") and p.get("vless_url"):
+                proc_result = pm.start(p["vless_url"], port)
+            else:
+                proc_result = pm.stop()
+            return jsonify({"success": True, "data": p, "process": proc_result})
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)})
+    else:
+        settings = load()
+        from src.web.proxy_manager import ProxyManager
+        return jsonify({
+            "success": True,
+            "data": settings.get("proxy", {}),
+            "process": ProxyManager().status(),
+        })
+
+
+@app.route("/api/proxy/test", methods=["POST"])
+def api_proxy_test():
+    """测试专用代理连通性 (通用网络 + OANDA 可达)"""
+    from src.web.proxy_manager import ProxyManager
+    result = ProxyManager().test_connectivity()
+    return jsonify({"success": True, **result})
 
 
 @app.route("/api/settings/mt4/test", methods=["POST"])

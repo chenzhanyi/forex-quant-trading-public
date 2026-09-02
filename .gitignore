@@ -40,3 +40,6 @@ data/active_positions.json
 data/trade_journal.json
 analysis_result.json
 data/gold_state.json
+.runtime/
+data/eurusd_fuse.json
+data/aud_state.json

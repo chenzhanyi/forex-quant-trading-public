@@ -7,10 +7,13 @@
 """
 import logging
 import threading
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from src.daemon.engine import DaemonEngine
 from src.daemon.gold_engine import GoldEngine
+from src.daemon.aud_engine import AudEngine
 from src.daemon.history import SignalHistory
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
@@ -19,12 +22,73 @@ logger = logging.getLogger("main")
 # 全局守护进程实例
 daemon = DaemonEngine()
 gold = GoldEngine()
+aud = AudEngine()
+
+# 统一调度间隔: 与 EURUSD 原信号循环一致(15分钟)
+UNIFIED_INTERVAL = 15 * 60
 
 
 def start_daemon():
     """在后台线程启动守护进程"""
     daemon.start()
     logger.info("✅ 守护进程已启动")
+
+
+def unified_tick():
+    """一次统一评估: 先拉取三品种最新数据, 再依次评估三引擎(下单/平仓/反转)
+
+    顺序保证: 所有引擎的评估都基于本轮刚刷新的同一批数据。
+    """
+    daemon._last_unified_tick = datetime.now(timezone.utc)
+    # ① 统一拉取三品种最新数据(OANDA主 + TwelveData备)
+    try:
+        daemon._refresh_market_data()  # EUR/USD (含重试/fallback/面板状态回写)
+    except Exception as e:
+        logger.warning(f"EURUSD 数据刷新失败: {str(e)[:60]}")
+    from src.data_collection.market_data import refresh_symbol_data
+    for sym, tag in [("XAU_USD", "黄金"), ("AUD_USD", "澳元")]:
+        try:
+            refresh_symbol_data(sym)
+        except Exception as e:
+            logger.warning(f"{tag} 数据刷新失败: {str(e)[:60]}")
+
+    # ② 按最新数据依次评估: 结算/反转出场 → 信号检测 → 下单
+    try:
+        daemon.evaluate_signal()
+    except Exception as e:
+        logger.error(f"EURUSD 评估失败: {e}")
+    try:
+        gold.evaluate()
+    except Exception as e:
+        logger.error(f"黄金评估失败: {e}")
+    try:
+        aud.evaluate()
+    except Exception as e:
+        logger.error(f"澳元评估失败: {e}")
+
+    daemon._last_eval_time = datetime.now(timezone.utc)
+    daemon._beat("signal", UNIFIED_INTERVAL * 2)
+
+
+def start_unified_scheduler():
+    """统一信号调度线程: 每15分钟 拉数据 → 三引擎依次评估"""
+    logger.info(
+        f"🔄 统一信号调度启动: 每 {UNIFIED_INTERVAL // 60} 分钟 "
+        f"拉取 EURUSD/黄金/澳元 最新数据 → 依次评估(下单/平仓/反转)"
+    )
+    def _loop():
+        unified_tick()  # 启动即跑一次
+        while True:
+            for _ in range(UNIFIED_INTERVAL // 10):
+                time.sleep(10)
+            try:
+                unified_tick()
+            except Exception as e:
+                logger.error(f"统一调度异常: {e}")
+
+    thread = threading.Thread(target=_loop, daemon=True)
+    thread.start()
+    return thread
 
 
 def register_daemon_routes(app):
@@ -43,8 +107,69 @@ def register_daemon_routes(app):
     @app.route("/api/gold/evaluate")
     def api_gold_evaluate():
         from flask import jsonify
-        result = gold.evaluate()
+        result = gold.evaluate(refresh=True)  # 手动评估: 先刷新行情再评估
         return jsonify({"success": True, "data": result})
+
+    @app.route("/api/aud/status")
+    def api_aud_status():
+        from flask import jsonify
+        return jsonify({"success": True, "data": aud.status})
+
+    @app.route("/api/aud/evaluate")
+    def api_aud_evaluate():
+        from flask import jsonify
+        result = aud.evaluate(refresh=True)  # 手动评估: 先刷新行情再评估
+        return jsonify({"success": True, "data": result})
+
+    @app.route("/api/market/status")
+    def api_market_status():
+        """三品种数据新鲜度 + 上次统一调度时间(供菜单栏状态)"""
+        from flask import jsonify
+        return jsonify({"success": True, "data": _market_status_data()})
+
+    @app.route("/api/menu/status")
+    def api_menu_status():
+        """菜单栏聚合状态 — 一次请求拿全(demon/gold/aud/market/proxy)
+
+        菜单栏每10秒轮询一次, 单请求避免多请求串行阻塞 AppKit 主线程。
+        """
+        from flask import jsonify
+        from src.utils.dashboard_settings import load
+        from src.web.proxy_manager import ProxyManager
+        try:
+            proxy_cfg = load().get("proxy", {})
+        except Exception:
+            proxy_cfg = {}
+        return jsonify({"success": True, "data": {
+            "daemon": daemon.status,
+            "gold": gold.status,
+            "aud": aud.status,
+            "market": _market_status_data(),
+            "proxy": {
+                "process": ProxyManager().status(),
+                "mode": proxy_cfg.get("mode", "off"),
+            },
+        }})
+
+
+def _market_status_data() -> dict:
+    """三品种数据新鲜度 + 上次统一调度时间"""
+    from datetime import datetime, timezone
+    from src.data_collection.oanda import OandaClient
+    o = OandaClient()
+    symbols = {}
+    for sym in ["EUR_USD", "XAU_USD", "AUD_USD"]:
+        try:
+            df = o.load_parquet("M15", symbol=sym)
+            last = df.index.max()
+            age_min = round((datetime.now(timezone.utc) - last).total_seconds() / 60)
+            symbols[sym] = {"last_ts": str(last), "age_min": age_min,
+                            "fresh": age_min < 60}
+        except Exception:
+            symbols[sym] = {"last_ts": None, "age_min": None, "fresh": False}
+    tick = getattr(daemon, "_last_unified_tick", None)
+    return {"symbols": symbols,
+            "last_tick": tick.isoformat() if tick else None}
 
     @app.route("/api/daemon/evaluate")
     def api_daemon_evaluate():
@@ -73,8 +198,14 @@ def main():
     daemon_thread = threading.Thread(target=start_daemon, daemon=True)
     daemon_thread.start()
 
-    # 启动黄金引擎
+    # 启动黄金引擎(评估由统一调度器驱动)
     gold.start()
+
+    # 启动澳元引擎(评估由统一调度器驱动)
+    aud.start()
+
+    # 启动统一信号调度: 每15分钟统一拉取三品种数据 → 依次评估
+    start_unified_scheduler()
 
     # 启动 Flask（后台线程，主线程留给菜单栏）
     app = create_app()
