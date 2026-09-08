@@ -43,3 +43,4 @@ data/gold_state.json
 .runtime/
 data/eurusd_fuse.json
 data/aud_state.json
+data/feishu_push.log

@@ -51,6 +51,7 @@ BE_BUFFER_POINTS = 0           # 保本锁定容差(点, 0.1美元=1点): SL锁�
 MAX_BARS = 192                # 持仓窗口(M15根数, 192=48h)
 DEDUP_PIPS = 0.0              # 重复价位过滤(美元单位, 黄金用美元不用pips)
 FLAT_RANGE = 0.0              # 横盘区间阈值(美元)
+MAX_POS = 0                   # 在途单量上限(模拟实盘限单, 0=不限) — 见 --maxpos
 
 
 def load_data(days):
@@ -129,17 +130,17 @@ def sim_basic(m15, i, direction, entry, sl, tp, max_bars=None):
                 sl = entry - buf if is_sell else entry + buf
         if is_sell:
             if h >= sl:
-                return ("BE" if be_active else "SL"), round(entry - sl, 1)
+                return ("BE" if be_active else "SL"), round(entry - sl, 1), b.name
             if l <= tp:
-                return "TP", round(entry - tp, 1)
+                return "TP", round(entry - tp, 1), b.name
         else:
             if l <= sl:
-                return ("BE" if be_active else "SL"), round(sl - entry, 1)
+                return ("BE" if be_active else "SL"), round(sl - entry, 1), b.name
             if h >= tp:
-                return "TP", round(tp - entry, 1)
+                return "TP", round(tp - entry, 1), b.name
     last_c = float(m15.iloc[end - 1]['close'])
     pnl = (entry - last_c) if is_sell else (last_c - entry)
-    return "OPEN", round(pnl, 1)
+    return "OPEN", round(pnl, 1), m15.iloc[end - 1].name
 
 
 def sim_reversal_exit(m15, tf_map, i, direction, entry, sl, tp,
@@ -156,14 +157,14 @@ def sim_reversal_exit(m15, tf_map, i, direction, entry, sl, tp,
 
         if is_sell:
             if h >= sl:
-                return "SL", round((entry - sl), 1)
+                return "SL", round((entry - sl), 1), dt
             if l <= tp:
-                return "TP", round((entry - tp), 1)
+                return "TP", round((entry - tp), 1), dt
         else:
             if l <= sl:
-                return "SL", round((sl - entry), 1)
+                return "SL", round((sl - entry), 1), dt
             if h >= tp:
-                return "TP", round((tp - entry), 1)
+                return "TP", round((tp - entry), 1), dt
 
         all_ok = True
         for tf in rev_tfs:
@@ -194,11 +195,11 @@ def sim_reversal_exit(m15, tf_map, i, direction, entry, sl, tp,
         profit = (entry - c) if is_sell else (c - entry)
         if profit < min_profit_usd:
             continue
-        return "REV", round(profit, 1)
+        return "REV", round(profit, 1), dt
 
     last_c = float(m15.iloc[end - 1]['close'])
     pnl = (entry - last_c) if is_sell else (last_c - entry)
-    return "OPEN", round(pnl, 1)
+    return "OPEN", round(pnl, 1), m15.iloc[end - 1].name
 
 
 def run(m15, h1, h4, session_filter=True):
@@ -218,6 +219,7 @@ def run(m15, h1, h4, session_filter=True):
     last_entry = {}            # 重复价位过滤基准
     loss_streak = {"SELL": 0, "BUY": 0}
     paused_until = {"SELL": None, "BUY": None}
+    active_until = []          # 在途订单的平仓时间(限单模拟)
 
     for i in range(20, len(m15)):
         bar = m15.iloc[i]
@@ -312,12 +314,20 @@ def run(m15, h1, h4, session_filter=True):
                 last_entry[direction] = (dt, p)
 
             # 结果跟踪（48h = 192根 M15, 统一逐 bar 时序模拟）
+            # 同方向持仓上限(模拟实盘限单, 0=不限): 超限信号跳过
+            if MAX_POS > 0:
+                active_until = [t for t in active_until if t > dt]
+                if len(active_until) >= MAX_POS:
+                    continue
+
             if EXIT_REV_TF:
-                oc, pnl = sim_reversal_exit(
+                oc, pnl, exit_t = sim_reversal_exit(
                     m15, tf_map, i, direction, p, sl, tp,
                     rev_tfs, EXIT_REV_MIN_USD, EXIT_REV_CONFIRM, MAX_BARS)
             else:
-                oc, pnl = sim_basic(m15, i, direction, p, sl, tp, MAX_BARS)
+                oc, pnl, exit_t = sim_basic(m15, i, direction, p, sl, tp, MAX_BARS)
+            if MAX_POS > 0:
+                active_until.append(exit_t)
 
             # 熔断状态更新
             if FUSE_MAX_LOSS_STREAK > 0:
@@ -357,6 +367,10 @@ if __name__ == "__main__":
         if a.startswith("--fuse-hours="): FUSE_HOURS = int(a.split("=")[1])
         if a.startswith("--dedup="): DEDUP_PIPS = float(a.split("=")[1])
         if a.startswith("--flat="): FLAT_RANGE = float(a.split("=")[1])
+        if a.startswith("--maxpos="): MAX_POS = int(a.split("=")[1])  # 在途单量上限
+        if a.startswith("--session="):
+            _s = a.split("=")[1].split(",")
+            SESSION_START, SESSION_END = int(_s[0]), int(_s[1])
 
     m15, h1, h4 = load_data(days)
     trades = run(m15, h1, h4)
@@ -398,6 +412,13 @@ if __name__ == "__main__":
         open_pnl = sum(t['pnl'] for t in trades if t['oc'] == 'OPEN')
         print(f"      其中 {opens} 单未结算(48h窗口内未触TP/SL) 浮动 ${open_pnl:+.0f}")
     print(f"月均: {len(trades)/max(days,1)*30:.1f}信号 | ${total_pnl/max(days,1)*30:+.0f}/月")
+    # 账号回撤: 按时间顺序累计权益曲线, 峰值到谷底的最大回撤
+    eq, peak, mdd = 0, 0, 0
+    for t in sorted(trades, key=lambda x: x['time']):
+        eq += t.get('pnl', 0)
+        peak = max(peak, eq)
+        mdd = min(mdd, eq - peak)
+    print(f"最大回撤: ${mdd:+.0f} (0.1手=1盎司口径, 0.2手=${mdd*2:+.0f})")
 
     if output_json:
         print("\n" + json.dumps(trades, ensure_ascii=False, indent=2))

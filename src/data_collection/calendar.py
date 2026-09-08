@@ -203,9 +203,16 @@ class EconomicCalendar:
 
     def get_eur_usd_high_impact(self, events: Optional[List[Dict]] = None) -> List[Dict]:
         """过滤出影响 EUR/USD 的事件"""
+        return self.get_high_impact(events, "EUR/USD")
+
+    def get_high_impact(self, events: Optional[List[Dict]] = None,
+                        symbol: str = "EUR/USD") -> List[Dict]:
+        """过滤出影响指定品种的事件 (USD 为三品种共有货币, 始终保留)"""
         if events is None:
             events = self.fetch()
-        return [e for e in events if e.get("currency", "").upper() in ("EUR", "USD")]
+        cur_map = {"EUR/USD": "EUR", "XAU/USD": "XAU", "AUD/USD": "AUD"}
+        cur = cur_map.get(symbol, "EUR")
+        return [e for e in events if e.get("currency", "").upper() in (cur, "USD")]
 
     def _parse_event_datetime(self, evt: Dict) -> Optional[datetime]:
         """解析事件的日期+时间为 UTC datetime（修复：合并 date 和 time 字段）"""

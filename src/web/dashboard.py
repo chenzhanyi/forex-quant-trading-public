@@ -193,29 +193,31 @@ def api_fundamentals():
 
 @app.route("/api/calendar")
 def api_calendar():
-    """获取经济日历（优先线上，降级到本地缓存）"""
+    """获取经济日历 (支持 ?symbol=EUR/USD|XAU/USD|AUD/USD, 默认 EUR/USD; 优先线上, 降级到本地缓存)"""
     try:
+        symbol = request.args.get("symbol", "EUR/USD")
+        if symbol not in ("EUR/USD", "XAU/USD", "AUD/USD"):
+            symbol = "EUR/USD"
         cal = EconomicCalendar()
         events = cal.fetch()
-        # 线上数据没有欧元/美元事件时，降级到本地缓存
-        eur = cal.get_eur_usd_high_impact(events)
-        if not eur:
+        # 线上数据没有该品种事件时，降级到本地缓存
+        filtered = cal.get_high_impact(events, symbol)
+        if not filtered:
             import json
             from pathlib import Path
             cal_dir = Path(__file__).resolve().parent.parent.parent / "data" / "calendar"
-            # 选最后一个有有效 EUR/USD 数据的缓存文件
             for f in sorted(cal_dir.glob("calendar_*.json"), reverse=True):
                 with open(f) as fh:
                     cached = json.load(fh)
                 if not isinstance(cached, list):
                     continue
-                eur_check = [e for e in cached if e.get("currency", "").upper() in ("EUR", "USD")]
-                if eur_check:
+                check = cal.get_high_impact(cached, symbol)
+                if check:
                     events = cached
-                    eur = eur_check
+                    filtered = check
                     break
         by_date: Dict[str, list] = {}
-        for e in eur:
+        for e in filtered:
             d = e.get("date", "")
             if d not in by_date:
                 by_date[d] = []
@@ -224,8 +226,9 @@ def api_calendar():
             "success": True,
             "data": {
                 "total": len(events),
-                "eur_usd": len(eur),
-                "high_impact": len([e for e in eur if e.get("impact","").lower() == "high"]),
+                "symbol": symbol,
+                "count": len(filtered),
+                "high_impact": len([e for e in filtered if e.get("impact","").lower() == "high"]),
                 "by_date": by_date,
             }
         })
@@ -300,26 +303,15 @@ def api_review():
 
 @app.route("/api/refresh")
 def api_refresh():
-    """刷新数据（行情+日历+新闻）"""
+    """刷新数据 — 与统一调度同机制(三品种 OANDA主+TwelveData备+专用代理), 并完成一轮评估"""
     try:
-        from src.data_collection.oanda import OandaClient
-        from src.data_collection.calendar import EconomicCalendar
-
-        # 行情
-        o = OandaClient()
-        for tf in ["D1", "H4", "H1", "M15", "M5"]:
-            d = o.fetch_candles(tf, 50)
-            o.save_candles(d, tf)
-
-        # 日历
-        cal = EconomicCalendar()
-        cal.collect_and_save()
-
+        # 延迟导入避免循环依赖(dashboard 被 src.daemon 的 create_app 加载)
+        from src.daemon import unified_tick
+        unified_tick()
         return jsonify({
             "success": True,
             "data": {
-                "oanda": "行情已更新",
-                "calendar": "日历已更新",
+                "message": "三品种数据已刷新并完成评估(下单/平仓/反转)",
                 "time": datetime.now(timezone.utc).isoformat(),
             }
         })

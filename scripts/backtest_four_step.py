@@ -606,6 +606,13 @@ if __name__ == "__main__":
         open_pip = sum(t['pip'] for t in trades if t['oc'] == 'OPEN')
         print(f"      其中 {opens} 单未结算(48h窗口内未触TP/SL) 浮动 {open_pip:+.0f}pips")
     print(f"月均: {len(trades)/max(days,1)*30:.1f}信号 {total_pip/max(days,1)*30:+.0f}pips/月")
+    # 账号回撤: 按时间顺序累计权益曲线, 峰值到谷底的最大回撤
+    eq, peak, mdd = 0, 0, 0
+    for t in sorted(trades, key=lambda x: x['time']):
+        eq += t['pip']
+        peak = max(peak, eq)
+        mdd = min(mdd, eq - peak)
+    print(f"最大回撤: {mdd:.0f} pips (0.01手=${mdd*0.1:.1f}, 0.1手=${mdd:.1f})")
 
     if output_json:
         print(json.dumps(trades, ensure_ascii=False, indent=2))

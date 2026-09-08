@@ -40,12 +40,27 @@ class ECBData:
         headers = {"Accept": "application/json"}
         params = {"startPeriod": "2024-01-01"}
 
-        try:
-            resp = self.client.get(url, headers=headers, params=params, timeout=30)
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            logger.error(f"ECB 汇率采集失败: {e}")
+        # 网络出口: 默认通道 → 专用代理(系统备用出口, 中控台 mode 决定)
+        import httpx
+        from src.utils.network import get_proxy_candidates
+        data = None
+        last_err = None
+        for proxy in get_proxy_candidates():
+            try:
+                client = (httpx.Client(proxy=proxy, timeout=30) if proxy
+                          else self.client)
+                resp = client.get(url, headers=headers, params=params, timeout=30)
+                resp.raise_for_status()
+                data = resp.json()
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                if proxy:
+                    logger.info(f"ECB 默认通道失败, 走专用代理重试: {str(e)[:50]}")
+                continue
+        if last_err is not None:
+            logger.error(f"ECB 汇率采集失败: {last_err}")
             return None
 
         try:

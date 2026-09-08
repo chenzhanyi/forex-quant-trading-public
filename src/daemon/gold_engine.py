@@ -43,6 +43,8 @@ class GoldEngine:
         self._open_trades = []  # 在途订单
         self._last_eval_time = None
         self._last_eval = None  # 最近一次评估摘要(供总览卡片)
+        # MT4同步两轮确认: relay缓存clear与上报间的空窗口不得误判平仓
+        self._mt4_missing = {}  # {ticket: 首次缺失时间}
         # 熔断状态: 同方向连续止损 N 次 → 暂停该方向(回测75天: 熔断2连SL 收益翻倍 49%→71%)
         self._fuse = {
             "loss_streak": {"SELL": 0, "BUY": 0},
@@ -65,6 +67,9 @@ class GoldEngine:
                         "paused_until": {**self._fuse["paused_until"],
                                          **saved_fuse.get("paused_until", {})},
                     }
+                saved_mm = data.get("mt4_missing")
+                if saved_mm:
+                    self._mt4_missing = dict(saved_mm)
             except Exception:
                 self._open_trades = []
 
@@ -72,7 +77,8 @@ class GoldEngine:
         GOLD_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmp = GOLD_STATE_FILE.with_suffix(".tmp")
         tmp.write_text(
-            json.dumps({"open_trades": self._open_trades, "fuse": self._fuse},
+            json.dumps({"open_trades": self._open_trades, "fuse": self._fuse,
+                        "mt4_missing": self._mt4_missing},
                        ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
@@ -211,6 +217,8 @@ class GoldEngine:
 
         # 结算在途订单（复用同一个 detector 的 M15 数据）
         self._settle_open_trades(detector)
+        # MT4 实际持仓同步: 手动平仓/EA执行差异 → 修正本地在途订单
+        self._sync_mt4_positions(detector)
 
         if not self.enabled:
             self._set_last_eval("未启用", self._eval_trend(detector))
@@ -243,9 +251,12 @@ class GoldEngine:
             return {"enabled": True, "signal": sig.__dict__, "skipped": "fused",
                     "open": len(self._open_trades), "eval": self._eval_count}
 
-        # 单量限制
-        if len(self._open_trades) >= self.max_open:
-            logger.info(f"🥇 单量已达上限({self.max_open})，跳过新信号")
+        # 单量限制 — 本地 + MT4 实时持仓双口径核对(防本地计数失真→超限下单)
+        no_ticket_local = [t for t in self._open_trades if not t.get("ticket")]
+        mt4_count = self._mt4_symbol_count()
+        total_open = mt4_count + len(no_ticket_local)
+        if total_open >= self.max_open:
+            logger.info(f"🥇 单量已达上限(本地{len(no_ticket_local)}+MT4{mt4_count}≥{self.max_open})，跳过新信号")
             d = "做空" if sig.direction == "SELL" else "做多"
             self._set_last_eval(f"信号出现({d})但单量已满", self._eval_trend(detector))
             return {"enabled": True, "signal": sig.__dict__, "skipped": "max_open",
@@ -439,6 +450,111 @@ class GoldEngine:
         _log_push("signal", msg)
         subprocess.run(["bash", str(push_script), msg],
                        capture_output=True, text=True, timeout=30)
+
+    def _mt4_symbol_count(self) -> int:
+        """relay 实时查询 MT4 上 XAUUSD 持仓总数(限单核对用, 失败返回0)"""
+        try:
+            from src.utils.dashboard_settings import load
+            cfg = load().get("mt4_relay", {})
+            url = cfg.get("url", "").rstrip("/")
+            if not url or not cfg.get("enabled", False):
+                return 0
+            import httpx
+            resp = httpx.get(f"{url}/positions", timeout=5)
+            if resp.status_code != 200:
+                return 0
+            return sum(
+                1 for p in resp.json().get("positions", [])
+                if str(p.get("symbol", "")).upper() == "XAUUSD"
+            )
+        except Exception:
+            return 0
+
+    def _sync_mt4_positions(self, detector=None) -> None:
+        """从 relay 拉 MT4 实际持仓, 修正本地在途订单
+
+        - 本地有 ticket 但 MT4 已无该持仓 → 手动平仓/EA差异 → 本地结算
+          (平仓类型按当前价距 SL/TP 远近判定, 供熔断计数)
+        - MT4 有但本地无 → 补记(手动单)
+        """
+        try:
+            from src.utils.dashboard_settings import load
+            cfg = load().get("mt4_relay", {})
+            url = cfg.get("url", "").rstrip("/")
+            if not url or not cfg.get("enabled", False):
+                return
+            import httpx
+            resp = httpx.get(f"{url}/positions", timeout=5)
+            if resp.status_code != 200:
+                return
+            mt4 = [p for p in resp.json().get("positions", [])
+                   if str(p.get("symbol", "")).upper() == "XAUUSD"]
+            mt4_tickets = {int(p["ticket"]) for p in mt4 if p.get("ticket")}
+
+            if self._open_trades:
+                if detector is None:
+                    from src.strategy.gold_entry import GoldEntryDetector
+                    detector = GoldEntryDetector()
+                m15 = detector._prepare_m15()
+                cl = float(m15.iloc[-1]['close']) if m15 is not None else None
+                remaining, changed, mm_changed = [], False, False
+                for t in self._open_trades:
+                    tk = t.get("ticket")
+                    if not tk:
+                        remaining.append(t)
+                        continue
+                    if tk in mt4_tickets:
+                        # 重新出现 → 清首次缺失标记(之前是瞬时空白)
+                        if self._mt4_missing.pop(tk, None):
+                            mm_changed = True
+                        remaining.append(t)
+                        continue
+                    # 两轮确认: 第一轮缺失只标记, 第二轮仍缺失才判平仓
+                    if tk not in self._mt4_missing:
+                        self._mt4_missing[tk] = datetime.now(SH_TZ).isoformat()
+                        mm_changed = True
+                        remaining.append(t)  # 本轮先保留, 下轮再判
+                        continue
+                    # 连续第二轮缺失 → 确认平仓
+                    self._mt4_missing.pop(tk, None)
+                    mm_changed = True
+                    logger.info(f"🥇 MT4同步: ticket {tk} 连续2轮不在MT4持仓 → 本地结算")
+                    is_sl = True
+                    if cl is not None:
+                        d_sl = abs(cl - t.get("sl", cl))
+                        d_tp = abs(cl - t.get("tp", cl))
+                        is_sl = d_sl <= d_tp
+                    self._finalize_trade(t, "SL" if is_sl else "TP", None, None, "")
+                    changed = True
+                if changed or mm_changed:
+                    self._open_trades = remaining
+                    self._save_state()
+
+            # MT4 有但本地无 → 补记(手动单)
+            local_tickets = {t.get("ticket") for t in self._open_trades}
+            for p in mt4:
+                tk = int(p.get("ticket", 0))
+                if not tk or tk in local_tickets:
+                    continue
+                entry = float(p.get("open", 0))
+                if entry <= 0:
+                    continue
+                direction = "SELL" if p.get("type") == "SELL" else "BUY"
+                sl = float(p.get("sl", 0))
+                tp = float(p.get("tp", 0))
+                self._open_trades.append({
+                    "direction": direction, "entry": entry,
+                    "sl": sl if sl > 0 else entry,
+                    "tp": tp if tp > 0 else entry,
+                    "sl_usd": round(abs(entry - sl), 2) if sl > 0 else 0,
+                    "tp_usd": round(abs(tp - entry), 2) if tp > 0 else 0,
+                    "pattern": "MT4同步补记(手动单)", "ticket": tk,
+                    "time": datetime.now(SH_TZ).isoformat(),
+                })
+                self._save_state()
+                logger.info(f"🥇 MT4同步: 补记 ticket {tk} {direction} @{entry}")
+        except Exception as e:
+            logger.debug(f"黄金MT4同步失败: {e}")
 
     def _mt4_order(self, sig):
         """通过 MT4 relay 下黄金单"""

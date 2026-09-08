@@ -633,6 +633,16 @@ class DaemonEngine:
             return False
         return True
 
+    def _fuse_paused_now(self) -> dict:
+        """熔断暂停的实时视图: 逐方向触发到期清理后返回(状态接口用)"""
+        result = {}
+        for d in ("SELL", "BUY"):
+            pu = self._fuse["paused_until"].get(d)
+            if pu:
+                self._eurusd_fused(d)  # 已到期则自动清理(写盘)
+            result[d] = self._fuse["paused_until"].get(d)
+        return result
+
     def _record_eurusd_fuse(self, direction: str, is_loss: bool) -> None:
         """平仓结算后更新熔断计数: 连续止损达到阈值 → 暂停该方向"""
         cfg = self._eurusd_fuse_cfg()
@@ -711,7 +721,9 @@ class DaemonEngine:
         self._prune_signal_stack(now_ts)
         active = sum(1 for e in self._signal_stack if e["direction"] == direction)
         maxd = self._max_same_dir()
-        if active >= maxd:
+        # MT4 实时同向持仓数核对(防本地计数失真→超限下单)
+        mt4_active = self._mt4_same_dir_count(direction)
+        if active >= maxd or mt4_active >= maxd:
             try:
                 self._push_feishu(
                     f"🌊 趋势延续提示\n"
@@ -720,9 +732,29 @@ class DaemonEngine:
                 )
             except Exception as e:
                 logger.warning(f"延续提示推送失败: {e}")
-            logger.info(f"🌊 同方向已达上限({maxd}单, 现{active}单), 转为延续提示不新增")
+            logger.info(f"🌊 同方向已达上限({maxd}单, 本地{active}/MT4{mt4_active}), 转为延续提示不新增")
             return False
         return True
+
+    def _mt4_same_dir_count(self, direction: str) -> int:
+        """relay 实时查询 MT4 上 EURUSD 同向持仓数(限单核对用, 失败返回0)"""
+        try:
+            from src.utils.dashboard_settings import load
+            cfg = load().get("mt4_relay", {})
+            url = cfg.get("url", "").rstrip("/")
+            if not url or not cfg.get("enabled", False):
+                return 0
+            import httpx
+            resp = httpx.get(f"{url}/positions", timeout=5)
+            if resp.status_code != 200:
+                return 0
+            return sum(
+                1 for p in resp.json().get("positions", [])
+                if str(p.get("symbol", "")).upper() in ("EURUSD", "EUR/USD")
+                and p.get("type") == direction
+            )
+        except Exception:
+            return 0
 
     def _maybe_push_signal_alert(self, sig) -> bool:
         """可交易信号实时飞书推送（30分钟冷却 + 方向变化立即推）
@@ -1095,15 +1127,40 @@ class DaemonEngine:
 
             mt4_directions = {("SELL" if p.get("type") == "SELL" else "BUY") for p in mt4_positions}
 
-            # 本地有但 MT4 没有的方向 → 已平仓，关闭本地记录
-            for direction in local_directions - mt4_directions:
+            # 两轮确认: relay /positions 是 EA 上报缓存, clear与上报之间存在
+            # 空窗口 — 单轮"查不到方向"可能是瞬时空白, 不得立即判平仓
+            # (误判→本地被清→超限下单; 曾致澳元3单上限继续开第4单)
+            missing_now = local_directions - mt4_directions
+            if not hasattr(self, "_mt4_missing_dir"):
+                self._mt4_missing_dir = {}
+            confirmed_missing = set()
+            for direction in missing_now:
+                if direction in self._mt4_missing_dir:
+                    confirmed_missing.add(direction)
+                else:
+                    self._mt4_missing_dir[direction] = time.time()
+            # 方向重新出现 → 清标记
+            for direction in list(self._mt4_missing_dir):
+                if direction not in missing_now:
+                    self._mt4_missing_dir.pop(direction, None)
+
+            # 本地有但 MT4 连续2轮没有的方向 → 已平仓，关闭本地记录
+            for direction in confirmed_missing:
+                self._mt4_missing_dir.pop(direction, None)
                 pos = pm.get_active(direction)
+                is_sl = False
                 if pos is not None:
                     # 熔断计数: 判定平仓类型(止损/止盈)
                     is_sl = self._judge_exit_type(pos)
                     self._record_eurusd_fuse(direction, is_sl)
+                    # 写回结算记录(信号文件+journal) — 此前同步清理不留痕,
+                    # 复盘里这些单显示"在途"永不结算
+                    try:
+                        self._settle_mt4_closed(pos, is_sl)
+                    except Exception as e:
+                        logger.debug(f"MT4同步结算写回失败: {e}")
                 pm.close_position(direction)
-                logger.info(f"🔄 MT4同步: 本地{direction}持仓已不存在, 已关闭本地记录")
+                logger.info(f"🔄 MT4同步: 本地{direction}持仓连续2轮不存在, 已关闭本地记录")
 
             # MT4 有但本地没有的方向 → 补记本地持仓
             # (EA延迟成交/手动单 — 补记后锁利建议/持仓卡片/反向平仓才能工作)
@@ -1144,6 +1201,45 @@ class DaemonEngine:
                 logger.info(f"📊 数据校准: 已回写 {updated_dirs} 持仓的MT4实际成交价/SL/TP")
         except Exception as e:
             logger.debug(f"MT4持仓同步跳过: {e}")
+
+    def _settle_mt4_closed(self, pos, is_sl: bool) -> None:
+        """MT4同步判定平仓的持仓 — 写回信号文件与 journal(无MT4平仓价, 按SL/TP价记)"""
+        from src.web.trade_journal import load_journal, save_journal
+        exit_price = pos.stop_loss if is_sl else pos.take_profit_1
+        pnl = round(-pos.sl_pips, 1) if is_sl else round(pos.tp1_pips, 1)
+        journal = load_journal()
+        for j in journal:
+            if (j.get("symbol") in (None, "EUR/USD")) and \
+               j.get("exit_result") in (None, "") and \
+               j.get("signal_file"):
+                # 匹配未结算的EURUSD记录(近似: 方向+入场价接近)
+                try:
+                    from pathlib import Path
+                    sf = Path("output") / "signals" / j["signal_file"]
+                    if not sf.exists():
+                        continue
+                    import json as _json
+                    data = _json.loads(sf.read_text(encoding="utf-8"))
+                    if data.get("direction") == ("🟢 做多" if pos.direction == "BUY" else "🔴 做空") and \
+                       abs(float(data.get("entry_price") or -1) - pos.entry_price) < 0.001:
+                        data["exit_result"] = "sl" if is_sl else "tp1"
+                        data["exit_price"] = exit_price
+                        data["exit_time"] = datetime.now(SH_TZ).isoformat()
+                        data["pnl_pips"] = pnl
+                        sf.write_text(_json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+                        j.update({
+                            "symbol": "EUR/USD",
+                            "exit_result": data["exit_result"],
+                            "exit_price": exit_price,
+                            "exit_time": data["exit_time"],
+                            "pnl_pips": pnl,
+                            "notes": "🔄 MT4同步判定平仓(MT4上已不存在)",
+                        })
+                        save_journal(journal)
+                        logger.info(f"🔄 MT4同步结算写回: {j['signal_file']} → {'SL' if is_sl else 'TP1'} {pnl:+.0f}p")
+                        return
+                except Exception:
+                    continue
 
     # ── 定期持仓提醒 ──
 
@@ -1438,7 +1534,8 @@ class DaemonEngine:
                 "max_streak": int(cfg.get("fuse_max_loss_streak", 2)),
                 "cooldown_hours": int(cfg.get("fuse_cooldown_hours", 48)),
                 "loss_streak": dict(self._fuse["loss_streak"]),
-                "paused_until": dict(self._fuse["paused_until"]),
+                # 动态判定: 到期即清理, 面板不显示已过期的暂停(避免误读)
+                "paused_until": self._fuse_paused_now(),
             },
             "eurusd": {
                 "autotrade": autotrade,

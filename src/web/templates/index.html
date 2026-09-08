@@ -130,35 +130,7 @@
     <!-- Tab: 总览 -->
     <div id="tab-dashboard" class="tab-content active">
 
-    <!-- 第一行: 三品种信号 (各含大势+建议) -->
-    <div class="grid grid-4" id="signalGrid">
-        <div class="card">
-            <div class="card-title">💶 欧元信号 <span id="sentimentLabel" style="font-size:12px;font-weight:400;margin-left:8px;"></span></div>
-            <div id="trendDisplay" class="value signal-wait">加载中...</div>
-            <div id="trendDetail" class="label">D1: -- | H4: --</div>
-            <div style="margin-top:8px;border-top:1px solid #30363d;padding-top:8px;">
-                <div id="signalDisplay" class="value signal-wait">加载中...</div>
-                <div id="signalReason" class="label">--</div>
-            </div>
-        </div>
-        <div class="card">
-            <div class="card-title">🥇 黄金信号</div>
-            <div id="goldSignalDisplay" class="value signal-wait">加载中...</div>
-            <div id="goldSignalDetail" class="label">--</div>
-        </div>
-        <div class="card">
-            <div class="card-title">🦘 澳元信号</div>
-            <div id="audSignalDisplay" class="value signal-wait">加载中...</div>
-            <div id="audSignalDetail" class="label">--</div>
-        </div>
-        <div class="card">
-            <div class="card-title">📊 今日信号</div>
-            <div id="todaySignalCount" class="value">--</div>
-            <div id="todaySignalDetail" class="label">--</div>
-        </div>
-    </div>
-
-    <!-- 三品种概况 + 策略说明 -->
+    <!-- 三品种概况 + 策略说明 (信号详情已由飞书推送, 面板只留状态监控) -->
     <div class="grid grid-4" style="margin-bottom:16px;">
         <div class="card">
             <div class="card-title">💶 欧元概况</div>
@@ -182,22 +154,9 @@
         </div>
     </div>
 
-    <!-- 详细信号 (2列) -->
+    <!-- 快速操作 -->
     <div class="grid grid-2" id="detailGrid">
-        <div class="card">
-            <div class="card-title">📋 入场详情</div>
-            <div id="entryDetail">
-                <div class="info-row"><span class="info-label">方向</span><span id="detDirection" class="info-value">--</span></div>
-                <div class="info-row"><span class="info-label">入场</span><span id="detEntry" class="info-value">--</span></div>
-                <div class="info-row"><span class="info-label">止损</span><span id="detStop" class="info-value">--</span></div>
-                <div class="info-row"><span class="info-label">TP1</span><span id="detTp1" class="info-value">--</span></div>
-                <div class="info-row"><span class="info-label">TP2</span><span id="detTp2" class="info-value">--</span></div>
-                <div class="info-row"><span class="info-label">仓位</span><span id="detLots" class="info-value">--</span></div>
-                <div class="info-row"><span class="info-label">最大亏损</span><span id="detLoss" class="info-value">--</span></div>
-            </div>
-            <div id="skipReason" style="color:#d29922;font-size:13px;margin-top:8px;display:none;"></div>
-        </div>
-        <div class="card">
+        <div class="card" style="grid-column: span 2;">
             <div class="card-title">🎯 快速操作</div>
             <div class="btn-group">
                 <button class="btn btn-primary" onclick="refreshData()">🔄 刷新数据</button>
@@ -250,7 +209,14 @@
 
     <!-- 经济日历 -->
     <div class="card">
-        <div class="card-title">📅 经济日历 <span id="calCount" style="font-weight:400;font-size:12px;"></span></div>
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
+            <span>📅 经济日历 <span id="calCount" style="font-weight:400;font-size:12px;"></span></span>
+            <select id="calSymbol" onchange="loadCalendar()" style="background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:4px 8px;font-size:12px;">
+                <option value="EUR/USD">💶 EUR/USD</option>
+                <option value="XAU/USD">🥇 XAU/USD</option>
+                <option value="AUD/USD">🦘 AUD/USD</option>
+            </select>
+        </div>
         <div id="calendarBox" style="max-height:300px;overflow-y:auto;">加载中...</div>
     </div>
 </div>  <!-- end tab-dashboard -->
@@ -573,16 +539,19 @@ async function loadSignal() {
         if (!res.success) { showError('signalDisplay', res.error || '加载失败'); return; }
         const d = res.data;
 
-    // 大势
+    // 信号展示卡已移除(信号由飞书推送) — 元素存在时兼容更新
     const trendEl = document.getElementById('trendDisplay');
-    trendEl.textContent = d.trend || '--';
-    trendEl.className = 'value ' + (d.can_trade ? (d.direction.includes('BUY') ? 'signal-buy' : 'signal-sell') : 'signal-wait');
+    if (trendEl) {
+        trendEl.textContent = d.trend || '--';
+        trendEl.className = 'value ' + (d.can_trade ? (d.direction.includes('BUY') ? 'signal-buy' : 'signal-sell') : 'signal-wait');
+    }
 
-    document.getElementById('trendDetail').textContent = `D1: ${d.d1_direction} | H4: ${d.h4_direction}`;
+    const tdEl = document.getElementById('trendDetail');
+    if (tdEl) tdEl.textContent = `D1: ${d.d1_direction} | H4: ${d.h4_direction}`;
 
     // 基本面情绪
     const sentEl = document.getElementById('sentimentLabel');
-    if (d.sentiment) {
+    if (sentEl && d.sentiment) {
         const emoji = d.sentiment.label === '看多' ? '🟢' : d.sentiment.label === '偏多' ? '🟡' : d.sentiment.label === '看空' ? '🔴' : d.sentiment.label === '偏空' ? '🟠' : '⚪';
         sentEl.textContent = `${emoji} ${d.sentiment.label} (${d.sentiment.score})`;
         sentEl.style.display = '';
@@ -590,11 +559,13 @@ async function loadSignal() {
 
     // 信号
     const sigEl = document.getElementById('signalDisplay');
-    sigEl.textContent = d.direction || '--';
-    sigEl.className = 'value ' + (d.can_trade ? (d.direction.includes('做多') ? 'signal-buy' : 'signal-sell') : 'signal-wait');
+    if (sigEl) {
+        sigEl.textContent = d.direction || '--';
+        sigEl.className = 'value ' + (d.can_trade ? (d.direction.includes('做多') ? 'signal-buy' : 'signal-sell') : 'signal-wait');
+    }
 
     const reasonEl = document.getElementById('signalReason');
-    reasonEl.textContent = d.can_trade ? d.reason : (d.skip_reason || '--');
+    if (reasonEl) reasonEl.textContent = d.can_trade ? d.reason : (d.skip_reason || '--');
 
     // 可信度卡片已并入入场详情(R:R/止损在详情区显示), 元素不存在时跳过
     const confEl = document.getElementById('confidenceDisplay');
@@ -608,38 +579,42 @@ async function loadSignal() {
             d.can_trade ? `R:R ${d.rr_ratio} | SL ${d.entry_price ? Math.abs((d.entry_price - d.stop_loss)*10000).toFixed(0) : '--'} pips` : '--';
     }
 
-    // 入场详情
-    document.getElementById('detDirection').textContent = d.direction || '--';
-    document.getElementById('detDirection').className = 'info-value ' + (d.can_trade ? (d.direction.includes('做多') ? 'signal-buy' : 'signal-sell') : '');
-
-    document.getElementById('detEntry').textContent = d.entry_price ? d.entry_price.toFixed(5) : '--';
-    document.getElementById('detStop').textContent = d.stop_loss ? d.stop_loss.toFixed(5) : '--';
-    document.getElementById('detTp1').textContent = d.tp1 ? d.tp1.toFixed(5) : '--';
-    document.getElementById('detTp2').textContent = d.tp2 ? d.tp2.toFixed(5) : '--';
-    document.getElementById('detLots').textContent = d.lots ? d.lots.toFixed(4) + ' 手' : '--';
-    document.getElementById('detLoss').textContent = d.max_loss ? '$' + d.max_loss.toFixed(2) : '--';
+    // 入场详情卡片已移除(信息并入💶欧元信号卡) — 元素存在时兼容更新
+    const detEls = ['detDirection', 'detEntry', 'detStop', 'detTp1', 'detTp2', 'detLots', 'detLoss'];
+    if (document.getElementById('detDirection')) {
+        document.getElementById('detDirection').textContent = d.direction || '--';
+        document.getElementById('detDirection').className = 'info-value ' + (d.can_trade ? (d.direction.includes('做多') ? 'signal-buy' : 'signal-sell') : '');
+        document.getElementById('detEntry').textContent = d.entry_price ? d.entry_price.toFixed(5) : '--';
+        document.getElementById('detStop').textContent = d.stop_loss ? d.stop_loss.toFixed(5) : '--';
+        document.getElementById('detTp1').textContent = d.tp1 ? d.tp1.toFixed(5) : '--';
+        document.getElementById('detTp2').textContent = d.tp2 ? d.tp2.toFixed(5) : '--';
+        document.getElementById('detLots').textContent = d.lots ? d.lots.toFixed(4) + ' 手' : '--';
+        document.getElementById('detLoss').textContent = d.max_loss ? '$' + d.max_loss.toFixed(2) : '--';
+    }
 
     const skipEl = document.getElementById('skipReason');
-    if (!d.can_trade && d.skip_reason) {
-        skipEl.textContent = '⏸ ' + d.skip_reason;
-        skipEl.style.display = 'block';
-    } else {
-        skipEl.style.display = 'none';
+    if (skipEl) {
+        if (!d.can_trade && d.skip_reason) {
+            skipEl.textContent = '⏸ ' + d.skip_reason;
+            skipEl.style.display = 'block';
+        } else {
+            skipEl.style.display = 'none';
+        }
     }
 
     document.getElementById('updateTime').textContent = '更新: ' + formatTime();
 
-    // 今日信号计数 (北京时区当天, 不含历史)
+    // 今日信号计数 (北京时区当天, 不含历史) — 卡片已移除时跳过
     try {
         const hist = await fetchJSON('/api/history');
-        if (hist.success) {
+        if (hist.success && document.getElementById('todaySignalCount')) {
             const s = hist.data.summary;
             document.getElementById('todaySignalCount').textContent = s.today_total || 0;
             document.getElementById('todaySignalDetail').textContent =
                 (s.today_trade_signals || 0) > 0 ? `${s.today_trade_signals} 次交易信号` : '仅观望(无交易信号)';
         }
     } catch(e) {
-        showError('todaySignalCount', '加载失败');
+        if (document.getElementById('todaySignalCount')) showError('todaySignalCount', '加载失败');
     }
     } catch(e) {
         if (e.name === 'AbortError') {
@@ -782,11 +757,12 @@ async function saveLLMSettings() {
 
 async function loadCalendar() {
     try {
-        const res = await fetchJSON('/api/calendar');
+        const sym = document.getElementById('calSymbol')?.value || 'EUR/USD';
+        const res = await fetchJSON('/api/calendar?symbol=' + encodeURIComponent(sym));
         if (!res.success) { showError('calendarBox', res.error || '加载失败'); return; }
         const d = res.data;
     document.getElementById('calCount').textContent =
-        `(${d.eur_usd} EUR/USD · ${d.high_impact} 高影响)`;
+        `(${d.count} ${sym.replace('/USD','')}事件 · ${d.high_impact} 高影响)`;
 
     let html = '';
     for (const [date, events] of Object.entries(d.by_date)) {
@@ -827,7 +803,8 @@ async function refreshData() {
     const btn = event?.target;
     if (btn) { btn.disabled = true; btn.textContent = '⏳ 刷新中...'; }
     try {
-        const res = await fetchJSON('/api/refresh', 60000);
+        // 统一调度整轮: OANDA重试+三品种+评估, 最坏约70s — 给足超时
+        const res = await fetchJSON('/api/refresh', 120000);
         if (res && res.success) {
             loadAll();
         } else {
@@ -1384,7 +1361,13 @@ async function loadExitRev() {
             if (!f.enabled) {
                 el.textContent = '⛔ 熔断已关闭';
             } else if (paused.length > 0) {
-                el.textContent = `⛔ 熔断暂停中: ${paused.join('+')} 方向 (连续止损, 冷却中)`;
+                // 显示每个方向的到期时间(双边独立, 其他方向照常交易)
+                const parts = paused.map(d => {
+                    const until = f.paused_until[d];
+                    const t = until ? until.replace('T', ' ').slice(5, 16) : '';
+                    return `${d}(至 ${t})`;
+                });
+                el.textContent = `⛔ 熔断暂停中: ${parts.join(' · ')} — 仅该方向暂停, 其他方向照常`;
                 el.style.color = '#f85149';
             } else {
                 const streak = ((f.loss_streak && (f.loss_streak.SELL + f.loss_streak.BUY)) || 0);
