@@ -397,7 +397,7 @@ def api_settings_gold():
             for key in ["enabled", "max_open", "auto_trade", "sl_atr_mult", "tp_usd", "rsi",
                         "lots",
                         "fuse_enabled", "fuse_max_loss_streak", "fuse_cooldown_hours",
-                        "be_trigger_usd", "be_lock_buffer_points"]:
+                        "be_trigger_usd", "be_lock_buffer_points", "d1_bias"]:
                 if key in data:
                     current["gold"][key] = data[key]
             save(current)
@@ -426,7 +426,7 @@ def api_settings_aud():
             for key in ["enabled", "max_open", "auto_trade", "sl_atr_mult", "tp_pips",
                         "lots",
                         "fuse_enabled", "fuse_max_loss_streak", "fuse_cooldown_hours",
-                        "flat_range", "dedup_pips"]:
+                        "flat_range", "dedup_pips", "d1_bias"]:
                 if key in data:
                     current["aud"][key] = data[key]
             save(current)
@@ -589,17 +589,19 @@ def api_settings_trade():
 
 @app.route("/api/settings/eurusd", methods=["GET", "POST"])
 def api_settings_eurusd():
-    """获取/更新 EURUSD RSI 过滤器开关与窗口 (默认关闭=原始设计)"""
+    """获取/更新 EURUSD 入场设置 (RSI过滤器/确认K线/H1形态确认 — 中控台优先)"""
     from src.utils.dashboard_settings import load, save
     from src.utils.config_loader import config
-    yaml_cfg = config.load().get("strategy", {}).get("entry", {}).get("rsi", {})
+    entry_yaml = config.load().get("strategy", {}).get("entry", {})
+    yaml_cfg = entry_yaml.get("rsi", {})
 
     if request.method == "POST":
         data = request.get_json(force=True)
         current = load()
         if "eurusd" not in current:
             current["eurusd"] = {}
-        for key in ["rsi_enabled", "rsi_lo", "rsi_hi"]:
+        for key in ["rsi_enabled", "rsi_lo", "rsi_hi",
+                    "confirm_bar", "h1_pattern"]:
             if key in data:
                 current["eurusd"][key] = data[key]
         save(current)
@@ -610,6 +612,8 @@ def api_settings_eurusd():
         "rsi_enabled": ui.get("rsi_enabled", yaml_cfg.get("enabled", False)),
         "rsi_lo": ui.get("rsi_lo", yaml_cfg.get("lo", 30)),
         "rsi_hi": ui.get("rsi_hi", yaml_cfg.get("hi", 60)),
+        "confirm_bar": ui.get("confirm_bar", entry_yaml.get("confirm_bar", False)),
+        "h1_pattern": ui.get("h1_pattern", entry_yaml.get("h1_pattern", False)),
     }})
 
 

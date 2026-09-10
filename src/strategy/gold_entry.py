@@ -70,6 +70,35 @@ class GoldEntryDetector:
         if sell: return sell
         return self._detect_buy()
 
+    # ── D1双K线强度参考(回测 --d1-bias 同款, 面板改动无需重启) ──
+
+    @property
+    def d1_bias(self) -> bool:
+        """D1双K线强度参考开关: 中控台优先 > YAML 兜底(默认开)
+        (回测170天: 收益+22% / 回撤-35%; 90天: 回撤-65%, 未结算浮亏-210→浮盈+54)"""
+        try:
+            from src.utils.dashboard_settings import load as ui_load
+            ui = ui_load().get("gold", {})
+            if ui and "d1_bias" in ui:
+                return bool(ui["d1_bias"])
+        except Exception:
+            pass
+        return bool(self.gold_cfg.get("d1_bias", True))
+
+    def _d1_net_body(self, dt):
+        """D1 最近两根已收盘K线净实体: >0偏多 / <0偏空 / None数据不足 —
+        与回测 _d1_bias 同语义(数据不足=无倾向, 不拦)"""
+        try:
+            d1 = self.oanda.load_parquet("D1", symbol=self.symbol_oanda)
+        except Exception:
+            return None
+        if d1 is None or len(d1) < 2:
+            return None
+        db = d1[d1.index <= dt]
+        if len(db) < 2:
+            return None
+        return float((db.iloc[-2:]['close'] - db.iloc[-2:]['open']).sum())
+
     def _prepare_m15(self) -> Optional[pd.DataFrame]:
         try:
             df = self.oanda.load_parquet("M15", symbol=self.symbol_oanda)
@@ -142,6 +171,13 @@ class GoldEntryDetector:
         sma, atr = self._get_h4_meta()
         if sma is None or p >= sma: return None
 
+        # ①b D1双K线强度参考(与回测 --d1-bias 同款): 净偏多 → 不做空
+        # 数据不足=无倾向不拦(与回测一致); 净实体=0 也双向放行
+        if self.d1_bias:
+            net = self._d1_net_body(dt)
+            if net is not None and net > 0:
+                return None
+
         e5 = float(bar['EMA5']); e15 = float(bar['EMA15'])
         if e5 >= e15: return None
 
@@ -169,6 +205,13 @@ class GoldEntryDetector:
 
         sma, atr = self._get_h4_meta()
         if sma is None or p <= sma: return None
+
+        # ①b D1双K线强度参考(与回测 --d1-bias 同款): 净偏空 → 不做多
+        # 数据不足=无倾向不拦(与回测一致); 净实体=0 也双向放行
+        if self.d1_bias:
+            net = self._d1_net_body(dt)
+            if net is not None and net < 0:
+                return None
 
         e5 = float(bar['EMA5']); e15 = float(bar['EMA15'])
         if e5 <= e15: return None

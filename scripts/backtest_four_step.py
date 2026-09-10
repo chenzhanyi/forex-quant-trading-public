@@ -65,6 +65,21 @@ CONFIRM_BAR = 0
 # 1=逐bar(等效5分钟级实时检测/收盘即检) 3=每3根(等效15分钟轮询)
 DETECT_EVERY = 1
 
+# H1周期形态窗口确认(--h1-pattern=1): 最近已收盘H1 bar出现同向形态,
+# 再等M15形态出现才入场 — H1/M15双周期形态共振
+H1_PATTERN = 0
+
+# 趋势周期(--trend-tf=H4/H1): 趋势过滤用哪个周期的200SMA —
+# H4(默认, 原系统) 或 H1(更灵敏的趋势判断)
+TREND_TF = "H4"
+
+# 趋势SMA周期(--sma-period=N): H4趋势过滤的SMA周期(默认200=原系统, 可试50)
+SMA_PERIOD = 200
+
+# D1双K线强度参考(--d1-bias=1): 最近两根已收盘D1的净实体方向作日内参考 —
+# 净偏多只放行BUY / 净偏空只放行SELL / 净实体=0无倾向双向放行
+D1_BIAS = 0
+
 # 结算窗口(M15根数): 实盘持仓不限时长, 持有到 SL/TP/反转触发 —
 # 窗口过短会把"仍在持仓的单"按截断收盘价结算, 与实盘结果偏差大(低波动品种尤其)
 # 默认192(48h)保持历史口径; 建议长窗口回测用 --maxbars=960(10天)/1920(20天)
@@ -84,6 +99,19 @@ def _in_session(hour, start, end):
     if start <= end:
         return start <= hour <= end
     return hour >= start or hour <= end
+
+
+def _d1_bias(d1, dt):
+    """D1 最近两根已收盘K线净实体方向: +1偏多 / -1偏空 / 0无倾向(数据不足同0)"""
+    if d1 is None:
+        return 0
+    db = d1[d1.index <= dt]
+    if len(db) < 2:
+        return 0
+    net = float((db.iloc[-2:]['close'] - db.iloc[-2:]['open']).sum())
+    if net > 0: return 1
+    if net < 0: return -1
+    return 0
 
 
 def detect_reversal_any(df, direction):
@@ -288,16 +316,22 @@ def load_data(days, symbol=None):
     m15 = m15[m15.index >= cutoff]
     h1 = fetch_tf("H1", 60, warmup_days=60)
     h4 = fetch_tf("H4", 240, warmup_days=60)
-    print(f"[数据] {sym} M15 {len(m15)}根 / H1 {len(h1)}根 / H4 {len(h4)}根")
-    return m15, h1, h4
+    d1 = fetch_tf("D1", 1440, warmup_days=60) if D1_BIAS else None
+    d1_n = len(d1) if d1 is not None else "-"
+    print(f"[数据] {sym} M15 {len(m15)}根 / H1 {len(h1)}根 / H4 {len(h4)}根 / D1 {d1_n}根")
+    return m15, h1, h4, d1
 
 
-def run(m15, h1, h4, session_filter=True):
-    h4 = ind.add_sma(h4, 200); h4 = ind.add_atr(h4, 14)
+def run(m15, h1, h4, d1=None, session_filter=True):
+    h4 = ind.add_sma(h4, SMA_PERIOD)
+    if SMA_PERIOD != 200:
+        h4 = ind.add_sma(h4, 200)   # 反转出场模块仍用200SMA(与实盘出场模块一致)
+    h4 = ind.add_atr(h4, 14)
+    sma_col = f"SMA{SMA_PERIOD}"    # 趋势过滤读取的列名
     m15 = ind.add_ema(m15, 5); m15 = ind.add_ema(m15, 15); m15 = ind.add_rsi(m15, 14)
     # 反转出场/H1哨兵用: 各周期 200SMA 预计算(检测时只做时间对齐切片)
     tf_map = {}
-    h1_s = ind.add_sma(h1, 200) if (EXIT_REV_TF or H1_GUARD) else None
+    h1_s = ind.add_sma(h1, 200) if (EXIT_REV_TF or H1_GUARD or TREND_TF == "H1") else None
     m15_s = None
     if EXIT_REV_TF:
         m15_s = ind.add_sma(m15, 200)
@@ -320,11 +354,26 @@ def run(m15, h1, h4, session_filter=True):
 
         h4b = h4[h4.index <= dt]
         if len(h4b) == 0: continue
-        h4_sma = float(h4b.iloc[-1]['SMA200'])
         h4_atr = float(h4b.iloc[-1].get('ATR', 0.002))
         # 挡 0/nan/负值 — 指标预热不足时跳过(防 nan 止损导致永不结算的幽灵持仓)
         if not (h4_atr > 0): continue
+        # 趋势SMA: 按 --trend-tf 选周期(H4默认/H1更灵敏/H4+H1共振), 同200SMA组合方法
+        if TREND_TF == "H1":
+            trend_df = h1_s if h1_s is not None else ind.add_sma(h1, 200)
+            tb = trend_df[trend_df.index <= dt]
+            if len(tb) == 0: continue
+            h4_sma = float(tb.iloc[-1]['SMA200'])
+        else:
+            h4_sma = float(h4b.iloc[-1][sma_col])
         if not (h4_sma > 0): continue
+        # 共振模式: H1 200SMA 也要求同侧(两周期一致才放行)
+        h1_trend_sma = None
+        if TREND_TF == "H4+H1":
+            trend_df = h1_s if h1_s is not None else ind.add_sma(h1, 200)
+            tb = trend_df[trend_df.index <= dt]
+            if len(tb) == 0: continue
+            h1_trend_sma = float(tb.iloc[-1]['SMA200'])
+            if not (h1_trend_sma > 0): continue
 
         # ── 横盘判定(近12根H4区间 < FLAT_RANGE): 与重复价位过滤联动 ──
         # 横盘期禁止同价位扎堆开仓; 趋势期允许顺势加仓
@@ -390,6 +439,11 @@ def run(m15, h1, h4, session_filter=True):
                 # 趋势/EMA/RSI(形态bar值, 与实盘一致)
                 if is_sell and float(sig_bar['close']) >= h4_sma: continue
                 if not is_sell and float(sig_bar['close']) <= h4_sma: continue
+                # D1双K线强度参考: 净偏多只放BUY / 净偏空只放SELL
+                if D1_BIAS:
+                    d1b = _d1_bias(d1, dt)
+                    if d1b == 1 and is_sell: continue
+                    if d1b == -1 and not is_sell: continue
                 e5 = float(sig_bar['EMA5']); e15 = float(sig_bar['EMA15'])
                 if is_sell and e5 >= e15: continue
                 if not is_sell and e5 <= e15: continue
@@ -410,6 +464,15 @@ def run(m15, h1, h4, session_filter=True):
             # 趋势过滤
             if not skip_std and is_sell and p >= h4_sma: continue
             if not skip_std and not is_sell and p <= h4_sma: continue
+            # 共振: H1 200SMA 同侧
+            if h1_trend_sma is not None:
+                if is_sell and p >= h1_trend_sma: continue
+                if not is_sell and p <= h1_trend_sma: continue
+            # D1双K线强度参考: 净偏多只放BUY / 净偏空只放SELL
+            if D1_BIAS:
+                d1b = _d1_bias(d1, dt)
+                if d1b == 1 and is_sell: continue
+                if d1b == -1 and not is_sell: continue
 
             # 趋势质量: 结构确认 + H1哨兵 — 默认拦截; --degrade 模式下降级放行
             # (H4说多但H1已转空 / 均线向上但低点结构破坏 = 下跌初段典型特征)
@@ -472,6 +535,31 @@ def run(m15, h1, h4, session_filter=True):
                                float(pv['close']) < float(pv['open']) and
                                float(ls['close']) > float(pv['open']))
                     if not pat: continue
+
+            # H1周期形态窗口确认: 最近已收盘H1 bar出现同向形态(与M15形态双确认)
+            if H1_PATTERN:
+                h1b = h1[h1.index <= dt]
+                if len(h1b) < 6:
+                    continue
+                w_h1 = h1b.iloc[-6:]
+                if is_sell:
+                    pat_h1 = (ind.is_bearish_reversal(w_h1) or ind.is_evening_star(w_h1) or
+                              ind.is_bearish_harami(w_h1) or ind.is_decisive_bearish(w_h1))
+                    if not pat_h1 and len(w_h1) >= 2:
+                        pv, ls = w_h1.iloc[-2], w_h1.iloc[-1]
+                        pat_h1 = (float(ls['close']) < float(ls['open']) and
+                                  float(pv['close']) > float(pv['open']) and
+                                  float(ls['close']) < float(pv['open']))
+                else:
+                    pat_h1 = (ind.is_bullish_reversal(w_h1) or ind.is_morning_star(w_h1) or
+                              ind.is_bullish_harami(w_h1) or ind.is_decisive_bullish(w_h1))
+                    if not pat_h1 and len(w_h1) >= 2:
+                        pv, ls = w_h1.iloc[-2], w_h1.iloc[-1]
+                        pat_h1 = (float(ls['close']) > float(ls['open']) and
+                                  float(pv['close']) < float(pv['open']) and
+                                  float(ls['close']) > float(pv['open']))
+                if not pat_h1:
+                    continue  # 最近已收盘H1无同向形态 → 不进场
 
             # RSI
             if not skip_std and (rsi < RSI_LO or rsi > RSI_HI): continue
@@ -606,12 +694,15 @@ if __name__ == "__main__":
         if a.startswith("--maxpos="): MAX_POS = int(a.split("=")[1])           # 同方向持仓上限(0=不限)
         if a.startswith("--confirm-bar="): CONFIRM_BAR = int(a.split("=")[1])  # 确认K线
         if a.startswith("--detect-every="): DETECT_EVERY = int(a.split("=")[1])  # 检测频率
+        if a.startswith("--h1-pattern="): H1_PATTERN = int(a.split("=")[1])     # H1形态窗口确认
+        if a.startswith("--trend-tf="): TREND_TF = a.split("=")[1].upper()      # 趋势周期 H4/H1
+        if a.startswith("--sma-period="): SMA_PERIOD = int(a.split("=")[1])     # H4趋势SMA周期(200默认)
+        if a.startswith("--d1-bias="): D1_BIAS = int(a.split("=")[1])           # D1双K线强度参考(1=开启)
         if a.startswith("--symbol="): BACKTEST_SYMBOL = a.split("=")[1].upper()  # 回测品种
-    if BACKTEST_SYMBOL and BACKTEST_SYMBOL.endswith("JPY"):
-        PIP_SCALE = 100  # JPY 类品种 1 pip = 0.01
-
         if a.startswith("--maxbars="): SETTLE_BARS = int(a.split("=")[1])      # 结算窗口(M15根数)
         if a.startswith("--slmult="): SL_ATR_MULT = float(a.split("=")[1])     # ATR止损倍数
+    if BACKTEST_SYMBOL and BACKTEST_SYMBOL.endswith("JPY"):
+        PIP_SCALE = 100  # JPY 类品种 1 pip = 0.01
 
     # RSI 默认跟随 config.yaml(与实盘一致), --rsi= 可显式覆盖
     if not any(a.startswith("--rsi=") for a in sys.argv[1:]):
@@ -632,8 +723,8 @@ if __name__ == "__main__":
     if LOCK_RATIO > 0:
         LOCK_PIPS = TP_PIPS * LOCK_RATIO   # 锁利 = 止盈 × 比例
 
-    m15, h1, h4 = load_data(days, symbol=BACKTEST_SYMBOL)
-    trades = run(m15, h1, h4)
+    m15, h1, h4, d1 = load_data(days, symbol=BACKTEST_SYMBOL)
+    trades = run(m15, h1, h4, d1=d1)
 
     wins = sum(1 for t in trades if t['oc'] == 'TP')
     losses = sum(1 for t in trades if t['oc'] == 'SL')
@@ -655,6 +746,8 @@ if __name__ == "__main__":
     if STRUCT_GUARD: flt += " | 结构确认"
     if H1_GUARD: flt += " | H1哨兵"
     if DEGRADE_MODE: flt += f" | 降级模式({DEGRADE_MODE})"
+    if SMA_PERIOD != 200: flt += f" | H4 SMA{SMA_PERIOD}"
+    if D1_BIAS: flt += " | D1双K线参考"
     print(f"6条件叠加法回测 (近{days}天) 时段: {SESSION_START:02d}:00-{SESSION_END:02d}:00 北京时间 | R:R≥{RR_MIN} | RSI{RSI_LO}-{RSI_HI} | {mode}{flt}")
     print(f"{'时间':<18} {'方向':<5} {'入场':>8} {'SLp':>5} {'TPp':>4} {'R:R':>4} {'结果':>5} {'Pip':>7}")
     print("-" * 65)

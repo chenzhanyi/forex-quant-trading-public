@@ -53,10 +53,36 @@ class EntryDetector:
         self.cfg = config.load()
         self.ind = Indicators()
         self.oanda = OandaClient()
-        self._rsi = self._load_rsi_cfg()
-        # 确认K线: 形态后第二根同向K线确认才进场(回测: EURUSD回撤减半)
+
+    # ── 配置为 property: 每次检测实时读取(面板改动无需重启) ──
+    # (此前在 __init__ 读取一次 — 长生命周期实例不感知面板变化)
+
+    @property
+    def _rsi(self) -> dict:
+        return self._load_rsi_cfg()
+
+    @property
+    def confirm_bar(self) -> bool:
+        """确认K线: 形态后第二根同向K线确认才进场(回测: 回撤减半)"""
+        return self._load_entry_bool_cfg("confirm_bar", False)
+
+    @property
+    def h1_pattern(self) -> bool:
+        """H1形态窗口确认: 最近已收盘H1 bar出现同向形态才入场
+        (回测170天: 叠加确认K线后 8单100%胜率 回撤-19p — 极保守模式)"""
+        return self._load_entry_bool_cfg("h1_pattern", False)
+
+    def _load_entry_bool_cfg(self, key: str, default: bool) -> bool:
+        """入场布尔开关: 中控台优先 > YAML 兜底(面板改动无需重启)"""
+        try:
+            from src.utils.dashboard_settings import load as ui_load
+            ui = ui_load().get("eurusd", {})
+            if ui and key in ui:
+                return bool(ui[key])
+        except Exception:
+            pass
         entry_cfg = self.cfg.get("strategy", {}).get("entry", {})
-        self.confirm_bar = bool(entry_cfg.get("confirm_bar", False))
+        return bool(entry_cfg.get(key, default))
 
     def _load_rsi_cfg(self) -> dict:
         """RSI 过滤器配置: 中控台优先 > YAML 兜底 > 默认关闭(原始EURUSD设计)"""
@@ -79,8 +105,8 @@ class EntryDetector:
     # ═══════════════════════════
 
     def detect(self, trend_overall: str = "") -> Optional[EntrySignal]:
-        """双向检测，返回第一个满足条件的信号"""
-        self._rsi = self._load_rsi_cfg()   # 每次实时读面板, 避免仅重启生效
+        """双向检测，返回第一个满足条件的信号
+        (_rsi 为 property, 每次访问实时读面板 — 无需此处再赋值)"""
         sell = self._detect_sell()
         if sell: return sell
         return self._detect_buy()
@@ -124,6 +150,19 @@ class EntryDetector:
         h4_sma200 = self._get_h4_sma200()
         if h4_sma200 is None or float(sig_bar['close']) >= h4_sma200:
             return None
+
+        # H1形态窗口确认(极保守模式): 最近已收盘H1 bar出现同向形态
+        # (与回测 --h1-pattern 同语义: 评估时点前已收盘H1的6根窗口)
+        if self.h1_pattern:
+            try:
+                h1_df = self.oanda.load_parquet("H1")
+                h1b = h1_df[h1_df.index <= dt]
+                if len(h1b) < 6:
+                    return None
+                if not self._detect_any_bearish(h1b):
+                    return None
+            except Exception:
+                return None  # H1数据不可用 → 保守不放行
 
         # ② M15 EMA5 < EMA15 (形态bar, 与回测一致)
         e5 = float(sig_bar['EMA5']); e15 = float(sig_bar['EMA15'])
@@ -198,6 +237,18 @@ class EntryDetector:
         h4_sma200 = self._get_h4_sma200()
         if h4_sma200 is None or float(sig_bar['close']) <= h4_sma200:
             return None
+
+        # H1形态窗口确认(极保守模式): 最近已收盘H1 bar出现同向形态
+        if self.h1_pattern:
+            try:
+                h1_df = self.oanda.load_parquet("H1")
+                h1b = h1_df[h1_df.index <= dt]
+                if len(h1b) < 6:
+                    return None
+                if not self._detect_any_bullish(h1b):
+                    return None
+            except Exception:
+                return None  # H1数据不可用 → 保守不放行
 
         e5 = float(sig_bar['EMA5']); e15 = float(sig_bar['EMA15'])
         if e5 <= e15:

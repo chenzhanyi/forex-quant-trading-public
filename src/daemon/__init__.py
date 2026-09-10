@@ -33,7 +33,34 @@ EVAL_INTERVAL = 5 * 60       # 信号评估
 def start_daemon():
     """在后台线程启动守护进程"""
     daemon.start()
+    _ensure_proxy()
     logger.info("✅ 守护进程已启动")
+
+
+def _ensure_proxy():
+    """启动时按面板配置自动拉起专用代理(sing-box) —
+    代理是系统级备用出口(OANDA直连被墙/日历403等自动走代理),
+    daemon 重启后必须随之拉起, 否则 auto 模式退化为全程失败(ERR×3)"""
+    try:
+        from src.utils.dashboard_settings import load
+        from src.web.proxy_manager import ProxyManager
+        p = load().get("proxy") or {}
+        mode = p.get("mode", "off")
+        vless = (p.get("vless_url") or "").strip()
+        if mode not in ("auto", "always") or not vless:
+            return
+        pm = ProxyManager()
+        if pm.is_running():
+            logger.info(f"🌐 专用代理已在运行 (端口{pm.current_port()})")
+            return
+        port = int(p.get("port", 7898))
+        r = pm.start(vless, port)
+        if r.get("success"):
+            logger.info(f"🌐 专用代理已自动拉起 (端口{port}, PID {r.get('pid')})")
+        else:
+            logger.warning(f"🌐 专用代理启动失败: {r.get('error', '未知')}")
+    except Exception as e:
+        logger.warning(f"🌐 专用代理启动检查失败: {str(e)[:60]}")
 
 
 def unified_tick(refresh: bool = False):

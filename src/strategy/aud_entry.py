@@ -9,11 +9,14 @@
   - ⑤ 时段: 8:00-16:00 北京时间 (悉尼盘+伦敦盘 — 澳元活跃时段;
         欧美盘 15-23 回测砍半收益, 不用)
   - ⑥ 止损: H4 ATR × 2.0 | 止盈: 固定 35p | RR≥1.0
+  - ⑦ D1双K线强度参考(回测340/170/90天三窗口一致: 收益+55% / 胜率+11pp / 回撤-36%):
+        最近两根已收盘D1净实体偏多→只放BUY, 偏空→只放SELL, 无倾向→双向放行
 
 关键差异 vs EURUSD: TP40 对澳元偏大(波动低, 48h内磨不到);
 SL 2.5 倍会让 RR 门槛拦死一半信号 → 2.0 倍 + TP35。
 """
 import logging
+import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -70,6 +73,35 @@ class AudEntryDetector:
         if sell: return sell
         return self._detect_buy()
 
+    # ── D1双K线强度参考(回测 --d1-bias 同款, 面板改动无需重启) ──
+
+    @property
+    def d1_bias(self) -> bool:
+        """D1双K线强度参考开关: 中控台优先 > YAML 兜底(默认开)
+        (回测340/170/90天三窗口一致: 收益+55% / 胜率+11pp / 回撤-36%)"""
+        try:
+            from src.utils.dashboard_settings import load as ui_load
+            ui = ui_load().get("aud", {})
+            if ui and "d1_bias" in ui:
+                return bool(ui["d1_bias"])
+        except Exception:
+            pass
+        return bool(self.aud_cfg.get("d1_bias", True))
+
+    def _d1_net_body(self, dt):
+        """D1 最近两根已收盘K线净实体: >0偏多 / <0偏空 / None数据不足 —
+        与回测 _d1_bias 同语义(数据不足=无倾向, 不拦)"""
+        try:
+            d1 = self.oanda.load_parquet("D1", symbol=self.symbol_oanda)
+        except Exception:
+            return None
+        if d1 is None or len(d1) < 2:
+            return None
+        db = d1[d1.index <= dt]
+        if len(db) < 2:
+            return None
+        return float((db.iloc[-2:]['close'] - db.iloc[-2:]['open']).sum())
+
     def _prepare_m15(self) -> Optional[pd.DataFrame]:
         try:
             df = self.oanda.load_parquet("M15", symbol=self.symbol_oanda)
@@ -107,7 +139,13 @@ class AudEntryDetector:
         if h4 is None:
             return None, None, None
         last = h4.iloc[-1]
-        return h4, float(last[f"SMA{self.trend_sma}"]), float(last["ATR"])
+        sma = float(last[f"SMA{self.trend_sma}"])
+        atr = float(last["ATR"])
+        # NaN防护(与回测 `if not (h4_sma > 0): continue` 对齐):
+        # 数据不足时 NaN 比较恒为 False 会放行趋势检查 → 显式判 None
+        if math.isnan(sma):
+            sma = None
+        return h4, sma, atr
 
     def h4_flat_range(self, h4_df=None, bars: int = 12) -> Optional[float]:
         """近 bars 根 H4 区间(pips) — 横盘判定用(引擎 flat 过滤复用)"""
@@ -157,6 +195,13 @@ class AudEntryDetector:
         _, sma, atr = self._get_h4_meta()
         if sma is None or p >= sma: return None
 
+        # ⑦ D1双K线强度参考(与回测 --d1-bias 同款): 净偏多 → 不做空
+        # 数据不足=无倾向不拦(与回测一致); 净实体=0 也双向放行
+        if self.d1_bias:
+            net = self._d1_net_body(dt)
+            if net is not None and net > 0:
+                return None
+
         e5 = float(bar['EMA5']); e15 = float(bar['EMA15'])
         if e5 >= e15: return None
 
@@ -180,6 +225,13 @@ class AudEntryDetector:
 
         _, sma, atr = self._get_h4_meta()
         if sma is None or p <= sma: return None
+
+        # ⑦ D1双K线强度参考(与回测 --d1-bias 同款): 净偏空 → 不做多
+        # 数据不足=无倾向不拦(与回测一致); 净实体=0 也双向放行
+        if self.d1_bias:
+            net = self._d1_net_body(dt)
+            if net is not None and net < 0:
+                return None
 
         e5 = float(bar['EMA5']); e15 = float(bar['EMA15'])
         if e5 <= e15: return None

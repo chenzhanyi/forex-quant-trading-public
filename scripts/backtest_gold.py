@@ -54,6 +54,11 @@ FLAT_RANGE = 0.0              # 横盘区间阈值(美元)
 MAX_POS = 0                   # 在途单量上限(模拟实盘限单, 0=不限) — 见 --maxpos
 CONFIRM_BAR = 0               # 确认K线: 形态后第二根同向K线(多=阳, 空=阴)确认才进场
 DETECT_EVERY = 1              # 检测频率: 1=逐bar(5分钟等效) 3=每3根(15分钟等效)
+H1_PATTERN = 0                # H1周期形态窗口确认: 最近已收盘H1出现同向形态才入场
+DOUBLE_PATTERN = 0            # M15双重形态确认: 前一根bar的形态窗口也需同向形态才入场
+DOUBLE_PATTERN_WINDOW = 1     # 双重形态间隔窗口(bar数): 1=连续, >1=前N根内出现过同向形态即可
+D1_BIAS = 0                   # D1双K线强度参考(与澳元同款): 最近两根已收盘D1净实体方向
+                              # 作日内参考 — 偏多只放BUY / 偏空只放SELL / 无倾向双向放行
 
 
 def load_data(days):
@@ -64,7 +69,11 @@ def load_data(days):
     h1_cut = h1[h1.index >= cutoff - timedelta(days=60)]
     h4 = o.load_parquet("H4", symbol=SYMBOL)
     h4_cut = h4[h4.index >= cutoff - timedelta(days=60)]
-    return m15, h1_cut, h4_cut
+    d1_cut = None
+    if D1_BIAS:
+        d1 = o.load_parquet("D1", symbol=SYMBOL)
+        d1_cut = d1[d1.index >= cutoff - timedelta(days=60)]
+    return m15, h1_cut, h4_cut, d1_cut
 
 
 def detect_reversal_any(df, direction):
@@ -204,7 +213,7 @@ def sim_reversal_exit(m15, tf_map, i, direction, entry, sl, tp,
     return "OPEN", round(pnl, 1), m15.iloc[end - 1].name
 
 
-def run(m15, h1, h4, session_filter=True):
+def run(m15, h1, h4, d1=None, session_filter=True):
     h4 = ind.add_sma(h4, TREND_SMA); h4 = ind.add_atr(h4, 14)
     m15 = ind.add_ema(m15, 5); m15 = ind.add_ema(m15, 15); m15 = ind.add_rsi(m15, 14)
     tf_map = {}
@@ -261,6 +270,15 @@ def run(m15, h1, h4, session_filter=True):
             if is_sell and p >= h4_sma: continue
             if not is_sell and p <= h4_sma: continue
 
+            # ①b D1双K线强度参考(与澳元 --d1-bias 同款): 偏多不做空 / 偏空不做多
+            # 数据不足(<2根已收盘D1)=无倾向不拦
+            if D1_BIAS and d1 is not None:
+                db = d1[d1.index <= dt]
+                if len(db) >= 2:
+                    net = float((db.iloc[-2:]['close'] - db.iloc[-2:]['open']).sum())
+                    if is_sell and net > 0: continue
+                    if not is_sell and net < 0: continue
+
             # 重复价位过滤: 横盘期(或无FLAT时全局)距48h内同向信号 < DEDUP 美元 → 跳过
             if DEDUP_PIPS > 0 and (flat_now or FLAT_RANGE <= 0):
                 prev = last_entry.get(direction)
@@ -299,6 +317,62 @@ def run(m15, h1, h4, session_filter=True):
                         float(last['close']) > float(prev['open'])):
                         pat = "阳吞阴"
                 if not pat: continue
+
+            # H1周期形态窗口确认: 最近已收盘H1 bar出现同向形态(与M15形态双确认)
+            if H1_PATTERN:
+                h1b = h1[h1.index <= dt]
+                if len(h1b) < 6:
+                    continue
+                w_h1 = h1b.iloc[-6:]
+                if is_sell:
+                    pat_h1 = (ind.is_bearish_reversal(w_h1) or ind.is_evening_star(w_h1) or
+                              ind.is_bearish_harami(w_h1) or ind.is_decisive_bearish(w_h1))
+                    if not pat_h1 and len(w_h1) >= 2:
+                        pv, ls = w_h1.iloc[-2], w_h1.iloc[-1]
+                        pat_h1 = (float(ls['close']) < float(ls['open']) and
+                                  float(pv['close']) > float(pv['open']) and
+                                  float(ls['close']) < float(pv['open']))
+                else:
+                    pat_h1 = (ind.is_bullish_reversal(w_h1) or ind.is_morning_star(w_h1) or
+                              ind.is_bullish_harami(w_h1) or ind.is_decisive_bullish(w_h1))
+                    if not pat_h1 and len(w_h1) >= 2:
+                        pv, ls = w_h1.iloc[-2], w_h1.iloc[-1]
+                        pat_h1 = (float(ls['close']) > float(ls['open']) and
+                                  float(pv['close']) < float(pv['open']) and
+                                  float(ls['close']) > float(pv['open']))
+                if not pat_h1:
+                    continue
+
+            # M15双重形态确认: 前 DOUBLE_PATTERN_WINDOW 根内出现过一次同向形态才入场
+            # (连续两根=窗口1; 宽松版窗口N=前N根内第二次形态)
+            if DOUBLE_PATTERN:
+                pat_prev = False
+                w_start = max(0, i - DOUBLE_PATTERN_WINDOW)
+                for j in range(w_start, i):
+                    w_prev = m15.iloc[max(0, j - 6):j + 1]
+                    if len(w_prev) < 2:
+                        continue
+                    if is_sell:
+                        p2 = (ind.is_bearish_reversal(w_prev) or ind.is_evening_star(w_prev) or
+                              ind.is_bearish_harami(w_prev) or ind.is_decisive_bearish(w_prev))
+                        if not p2 and len(w_prev) >= 2:
+                            pv, ls = w_prev.iloc[-2], w_prev.iloc[-1]
+                            p2 = (float(ls['close']) < float(ls['open']) and
+                                  float(pv['close']) > float(pv['open']) and
+                                  float(ls['close']) < float(pv['open']))
+                    else:
+                        p2 = (ind.is_bullish_reversal(w_prev) or ind.is_morning_star(w_prev) or
+                              ind.is_bullish_harami(w_prev) or ind.is_decisive_bullish(w_prev))
+                        if not p2 and len(w_prev) >= 2:
+                            pv, ls = w_prev.iloc[-2], w_prev.iloc[-1]
+                            p2 = (float(ls['close']) > float(ls['open']) and
+                                  float(pv['close']) < float(pv['open']) and
+                                  float(ls['close']) > float(pv['open']))
+                    if p2:
+                        pat_prev = True
+                        break
+                if not pat_prev:
+                    continue
 
             # ④ RSI 30-60
             if rsi < RSI_LO or rsi > RSI_HI: continue
@@ -398,12 +472,16 @@ if __name__ == "__main__":
         if a.startswith("--maxpos="): MAX_POS = int(a.split("=")[1])  # 在途单量上限
         if a.startswith("--confirm-bar="): CONFIRM_BAR = int(a.split("=")[1])  # 确认K线
         if a.startswith("--detect-every="): DETECT_EVERY = int(a.split("=")[1])  # 检测频率
+        if a.startswith("--h1-pattern="): H1_PATTERN = int(a.split("=")[1])     # H1形态窗口确认
+        if a.startswith("--double-pattern="): DOUBLE_PATTERN = int(a.split("=")[1])  # M15双重形态
+        if a.startswith("--double-window="): DOUBLE_PATTERN_WINDOW = int(a.split("=")[1])  # 形态间隔窗口
+        if a.startswith("--d1-bias="): D1_BIAS = int(a.split("=")[1])     # D1双K线强度参考(1=开启)
         if a.startswith("--session="):
             _s = a.split("=")[1].split(",")
             SESSION_START, SESSION_END = int(_s[0]), int(_s[1])
 
-    m15, h1, h4 = load_data(days)
-    trades = run(m15, h1, h4)
+    m15, h1, h4, d1 = load_data(days)
+    trades = run(m15, h1, h4, d1=d1)
 
     wins = sum(1 for t in trades if t['oc'] == 'TP')
     losses = sum(1 for t in trades if t['oc'] == 'SL')

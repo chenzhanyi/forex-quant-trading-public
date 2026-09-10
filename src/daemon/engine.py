@@ -1112,13 +1112,21 @@ class DaemonEngine:
             ok = False
             ea = False
 
-            # HTTP check
+            # HTTP check (VPS直连约9/10稳定, 瞬时抖动常见 → 失败重试1次, 减少误报红灯)
             try:
                 import httpx
-                resp = httpx.get(f"{url}/health", timeout=5, headers=relay_headers())
-                if resp.status_code == 200:
-                    ok = True
-                    ea = resp.json().get("ea_connected", False)
+                from src.execution.mt4_remote import relay_headers
+                for _try in range(2):
+                    try:
+                        resp = httpx.get(f"{url}/health", timeout=5, headers=relay_headers())
+                        if resp.status_code == 200:
+                            ok = True
+                            ea = resp.json().get("ea_connected", False)
+                            break
+                    except Exception as e:
+                        logger.warning(f"VPS健康检查 #{_try+1} 失败: {type(e).__name__}: {str(e)[:80]}")
+                        if _try == 0:
+                            _time.sleep(1)
             except Exception:
                 pass
 
@@ -1155,6 +1163,7 @@ class DaemonEngine:
                 return
 
             import httpx
+            from src.execution.mt4_remote import relay_headers
             resp = httpx.get(f"{url}/positions", timeout=5, headers=relay_headers())
             if resp.status_code != 200:
                 return

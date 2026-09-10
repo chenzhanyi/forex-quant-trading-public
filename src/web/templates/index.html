@@ -399,6 +399,25 @@
         </div>
         <div id="eurRsiResult" style="font-size:13px;color:#8b949e;"></div>
     </div>
+
+    <div class="card">
+        <div class="card-title">🎯 EURUSD 入场确认 <span style="color:#8b949e;font-size:12px;">(回测170天: 确认K线回撤减半; +H1形态100%胜率)</span></div>
+        <div style="margin:12px 0;">
+            <label style="color:#c9d1d9;font-size:13px;">确认K线 <span style="color:#8b949e;">(形态后第二根同向阳/阴线才进场)</span></label>
+            <select id="eurConfirmBar" onchange="saveEurEntry()" style="display:block;width:100%;margin-top:4px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px;font-size:13px;">
+                <option value="true">✅ 开启 (回撤-50p, 收益/回撤4.6)</option>
+                <option value="false">❌ 关闭 (原始设计)</option>
+            </select>
+        </div>
+        <div style="margin:12px 0;">
+            <label style="color:#c9d1d9;font-size:13px;">H1形态确认 <span style="color:#8b949e;">(最近已收盘H1出现同向形态 — 极保守模式)</span></label>
+            <select id="eurH1Pattern" onchange="saveEurEntry()" style="display:block;width:100%;margin-top:4px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px;font-size:13px;">
+                <option value="true">✅ 开启 (100%胜率, 回撤-19p, 约1.4单/月)</option>
+                <option value="false">❌ 关闭 (常态模式)</option>
+            </select>
+        </div>
+        <div id="eurEntryResult" style="font-size:13px;color:#8b949e;"></div>
+    </div>
 </div>
 
 
@@ -440,6 +459,14 @@
             <input id="goldLots" type="number" step="0.01" min="0.01" value="0.01" onchange="saveGold()" style="width:70px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:6px 10px;">
             <button class="btn" onclick="saveGold()" style="padding:6px 12px;">💾 保存</button>
         </div>
+        <div style="margin-top:12px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
+            <label style="font-size:13px;color:#c9d1d9;">D1双K线参考:</label>
+            <select id="goldD1Bias" onchange="saveGold()" style="background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:6px 10px;" title="最近两根已收盘D1净实体方向做日内参考: 偏多只做多/偏空只做空 (回测170天: 收益+22% 回撤-35%)">
+                <option value="true">✅ 开启</option>
+                <option value="false">❌ 关闭</option>
+            </select>
+            <span style="font-size:12px;color:#8b949e;">(D1净实体日内方向过滤, 回测两窗口一致降回撤)</span>
+        </div>
     </div>
 </div>
 
@@ -447,7 +474,7 @@
 <div id="tab-aud" class="tab-content">
     <div class="card">
         <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
-            <span>🦘 澳元 AUD/USD <span style="font-size:12px;color:#8b949e;">(方案A: TP35/SL2.0/亚欧盘8-16 — 回测170天 84单58% +533p)</span></span>
+            <span>🦘 澳元 AUD/USD <span style="font-size:12px;color:#8b949e;">(方案A: TP35/SL2.0/亚欧盘8-16 + D1双K线参考 — 回测170天 60单69% +783p)</span></span>
             <div style="display:flex;gap:8px;">
                 <button class="btn" onclick="evalAud()">🔍 手动评估</button>
                 <button class="btn" onclick="loadAud()">🔄 刷新</button>
@@ -480,6 +507,14 @@
             <label style="font-size:13px;color:#c9d1d9;">每笔固定手数 <span style="font-size:12px;color:#8b949e;">(独立于欧美/黄金, → MT4下单)</span></label>
             <input id="audLots" type="number" step="0.01" min="0.01" value="0.01" onchange="saveAud()" style="width:70px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:6px 10px;">
             <button class="btn" onclick="saveAud()" style="padding:6px 12px;">💾 保存</button>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
+            <label style="font-size:13px;color:#c9d1d9;">D1双K线参考:</label>
+            <select id="audD1Bias" onchange="saveAud()" style="background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:6px 10px;" title="最近两根已收盘D1净实体方向做日内参考: 偏多只做多/偏空只做空 (回测三窗口: 收益+55% 胜率+11pp 回撤-36%)">
+                <option value="true">✅ 开启</option>
+                <option value="false">❌ 关闭</option>
+            </select>
+            <span style="font-size:12px;color:#8b949e;">(D1净实体日内方向过滤, 回测三窗口一致跑赢)</span>
         </div>
     </div>
 </div>
@@ -1014,6 +1049,7 @@ async function loadGold() {
                 document.getElementById('goldBeBuffer').value = gset.data.be_lock_buffer_points ?? 3;
                 document.getElementById('goldFuseStreak').value = gset.data.fuse_max_loss_streak ?? 2;
                 document.getElementById('goldLots').value = gset.data.lots ?? 0.01;
+                document.getElementById('goldD1Bias').value = (gset.data.d1_bias === undefined ? true : gset.data.d1_bias) ? 'true' : 'false';
             }
         } catch(e) {}
         let html = '';
@@ -1049,7 +1085,8 @@ async function saveGold() {
             be_trigger_usd: parseFloat(document.getElementById('goldBeTrigger').value) || 0,
             be_lock_buffer_points: parseInt(document.getElementById('goldBeBuffer').value) || 0,
             fuse_max_loss_streak: parseInt(document.getElementById('goldFuseStreak').value) || 0,
-            lots: parseFloat(document.getElementById('goldLots').value) || 0.01
+            lots: parseFloat(document.getElementById('goldLots').value) || 0.01,
+            d1_bias: document.getElementById('goldD1Bias').value === 'true'
         })
     });
     loadGold();
@@ -1073,6 +1110,7 @@ async function loadAud() {
                 document.getElementById('audTpPips').value = aset.data.tp_pips ?? 35;
                 document.getElementById('audFuseStreak').value = aset.data.fuse_max_loss_streak ?? 2;
                 document.getElementById('audLots').value = aset.data.lots ?? 0.01;
+                document.getElementById('audD1Bias').value = (aset.data.d1_bias === undefined ? true : aset.data.d1_bias) ? 'true' : 'false';
             }
         } catch(e) {}
         let html = '';
@@ -1107,7 +1145,8 @@ async function saveAud() {
             auto_trade: document.getElementById('audAutoTrade').value === 'true',
             tp_pips: parseFloat(document.getElementById('audTpPips').value) || 35,
             fuse_max_loss_streak: parseInt(document.getElementById('audFuseStreak').value) || 0,
-            lots: parseFloat(document.getElementById('audLots').value) || 0.01
+            lots: parseFloat(document.getElementById('audLots').value) || 0.01,
+            d1_bias: document.getElementById('audD1Bias').value === 'true'
         })
     });
     loadAud();
@@ -1226,7 +1265,31 @@ async function loadEurRsi() {
             document.getElementById('eurRsiLo').value = d.data.rsi_lo;
             document.getElementById('eurRsiHi').value = d.data.rsi_hi;
         }
+        // 入场确认开关(确认K线/H1形态)
+        if (d.success && document.getElementById('eurConfirmBar')) {
+            document.getElementById('eurConfirmBar').value = d.data.confirm_bar ? 'true' : 'false';
+            document.getElementById('eurH1Pattern').value = d.data.h1_pattern ? 'true' : 'false';
+        }
     } catch(e) {}
+}
+async function saveEurEntry() {
+    const p = {
+        confirm_bar: document.getElementById('eurConfirmBar').value === 'true',
+        h1_pattern: document.getElementById('eurH1Pattern').value === 'true'
+    };
+    try {
+        const r = await fetch('/api/settings/eurusd', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(p)
+        });
+        const d = await r.json();
+        const el = document.getElementById('eurEntryResult');
+        el.style.color = d.success ? '#3fb950' : '#f85149';
+        el.textContent = d.success
+            ? `✅ 已保存: 确认K线${p.confirm_bar ? '开启' : '关闭'} / H1形态${p.h1_pattern ? '开启' : '关闭'} (立即生效)`
+            : ('❌ ' + (d.error || '保存失败'));
+    } catch(e) { console.error(e); }
 }
 async function saveEurRsi() {
     const p = {

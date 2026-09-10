@@ -25,8 +25,11 @@ def fetch_menu_status() -> dict:
     t0 = time.time()
     try:
         import urllib.request
+        # 本地回环请求强制直连: macOS 系统代理开启时 urllib 会把 127.0.0.1
+        # 也发给代理 → 502 Bad Gateway(菜单栏灯灭根因)
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         req = urllib.request.Request(f"{API_BASE}/api/menu/status", method="GET")
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with opener.open(req, timeout=10) as resp:
             data = json.loads(resp.read())
             logger.debug(f"menu/status 请求成功 {int((time.time()-t0)*1000)}ms")
             return data.get("data", {})
