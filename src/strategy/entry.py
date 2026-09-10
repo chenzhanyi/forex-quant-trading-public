@@ -54,6 +54,9 @@ class EntryDetector:
         self.ind = Indicators()
         self.oanda = OandaClient()
         self._rsi = self._load_rsi_cfg()
+        # 确认K线: 形态后第二根同向K线确认才进场(回测: EURUSD回撤减半)
+        entry_cfg = self.cfg.get("strategy", {}).get("entry", {})
+        self.confirm_bar = bool(entry_cfg.get("confirm_bar", False))
 
     def _load_rsi_cfg(self) -> dict:
         """RSI 过滤器配置: 中控台优先 > YAML 兜底 > 默认关闭(原始EURUSD设计)"""
@@ -91,27 +94,44 @@ class EntryDetector:
         m15 = self._prepare_m15()
         if m15 is None: return None
 
-        bar = m15.iloc[-1]
-        p = float(bar['close'])
-        dt = bar.name
+        # 确认K线模式(回测: EURUSD回撤减半-103→-50p, 收益/回撤2.87→4.56):
+        # 形态在倒数第二根及以前出现, 最后一根阴线确认后才进场 —
+        # 与回测同语义: SMA/EMA/RSI 用形态bar(倒数第二根)的值,
+        # 入场价/SL/TP/时段 用确认bar(最后一根)
+        if self.confirm_bar:
+            if len(m15) < 7:
+                return None
+            m15_hist = m15.iloc[:-1]
+            sig_bar = m15_hist.iloc[-1]      # 形态bar: SMA/EMA/RSI 判定用
+            bar = m15.iloc[-1]               # 确认bar: 入场价/时段/SL/TP用
+            p = float(bar['close'])
+            dt = bar.name
+            if float(bar['close']) >= float(bar['open']):
+                return None  # 做空需阴线确认
+            pattern = self._detect_any_bearish(m15_hist)
+            if not pattern:
+                return None
+        else:
+            sig_bar = m15.iloc[-1]
+            bar = m15.iloc[-1]
+            p = float(bar['close'])
+            dt = bar.name
+            pattern = self._detect_any_bearish(m15)
+            if not pattern:
+                return None
 
-        # ① H4 收盘 < 200SMA
+        # ① H4 收盘 < 200SMA (形态bar价格判定, 与回测一致)
         h4_sma200 = self._get_h4_sma200()
-        if h4_sma200 is None or p >= h4_sma200:
+        if h4_sma200 is None or float(sig_bar['close']) >= h4_sma200:
             return None
 
-        # ② M15 EMA5 < EMA15
-        e5 = float(bar['EMA5']); e15 = float(bar['EMA15'])
+        # ② M15 EMA5 < EMA15 (形态bar, 与回测一致)
+        e5 = float(sig_bar['EMA5']); e15 = float(sig_bar['EMA15'])
         if e5 >= e15:
             return None
 
-        # ③ 空头形态
-        pattern = self._detect_any_bearish(m15)
-        if not pattern:
-            return None
-
-        # ④ RSI 过滤器 (可配, 默认关闭 — 原始EURUSD设计)
-        rsi = float(bar.get('RSI14', 50))
+        # ④ RSI 过滤器 (形态bar, 可配, 默认关闭 — 原始EURUSD设计)
+        rsi = float(sig_bar.get('RSI14', 50))
         if self._rsi["enabled"] and (rsi < self._rsi["lo"] or rsi > self._rsi["hi"]):
             return None
 
@@ -149,23 +169,41 @@ class EntryDetector:
         m15 = self._prepare_m15()
         if m15 is None: return None
 
-        bar = m15.iloc[-1]
-        p = float(bar['close'])
-        dt = bar.name
+        # 确认K线模式(回测: EURUSD回撤减半, 收益/回撤2.87→4.56):
+        # 形态在倒数第二根及以前出现, 最后一根阳线确认后才进场 —
+        # 与回测同语义: SMA/EMA/RSI 用形态bar(倒数第二根)的值,
+        # 入场价/SL/TP/时段 用确认bar(最后一根)
+        if self.confirm_bar:
+            if len(m15) < 7:
+                return None
+            m15_hist = m15.iloc[:-1]
+            sig_bar = m15_hist.iloc[-1]      # 形态bar: SMA/EMA/RSI 判定用
+            bar = m15.iloc[-1]               # 确认bar: 入场价/时段/SL/TP用
+            p = float(bar['close'])
+            dt = bar.name
+            if float(bar['close']) <= float(bar['open']):
+                return None  # 做多需阳线确认
+            pattern = self._detect_any_bullish(m15_hist)
+            if not pattern:
+                return None
+        else:
+            sig_bar = m15.iloc[-1]
+            bar = m15.iloc[-1]
+            p = float(bar['close'])
+            dt = bar.name
+            pattern = self._detect_any_bullish(m15)
+            if not pattern:
+                return None
 
         h4_sma200 = self._get_h4_sma200()
-        if h4_sma200 is None or p <= h4_sma200:
+        if h4_sma200 is None or float(sig_bar['close']) <= h4_sma200:
             return None
 
-        e5 = float(bar['EMA5']); e15 = float(bar['EMA15'])
+        e5 = float(sig_bar['EMA5']); e15 = float(sig_bar['EMA15'])
         if e5 <= e15:
             return None
 
-        pattern = self._detect_any_bullish(m15)
-        if not pattern:
-            return None
-
-        rsi = float(bar.get('RSI14', 50))
+        rsi = float(sig_bar.get('RSI14', 50))
         if self._rsi["enabled"] and (rsi < self._rsi["lo"] or rsi > self._rsi["hi"]):
             return None
 

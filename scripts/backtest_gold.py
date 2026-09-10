@@ -52,6 +52,8 @@ MAX_BARS = 192                # 持仓窗口(M15根数, 192=48h)
 DEDUP_PIPS = 0.0              # 重复价位过滤(美元单位, 黄金用美元不用pips)
 FLAT_RANGE = 0.0              # 横盘区间阈值(美元)
 MAX_POS = 0                   # 在途单量上限(模拟实盘限单, 0=不限) — 见 --maxpos
+CONFIRM_BAR = 0               # 确认K线: 形态后第二根同向K线(多=阳, 空=阴)确认才进场
+DETECT_EVERY = 1              # 检测频率: 1=逐bar(5分钟等效) 3=每3根(15分钟等效)
 
 
 def load_data(days):
@@ -222,6 +224,9 @@ def run(m15, h1, h4, session_filter=True):
     active_until = []          # 在途订单的平仓时间(限单模拟)
 
     for i in range(20, len(m15)):
+        # 检测频率模拟: 每DETECT_EVERY根检测一次(实盘轮询间隔的离散化)
+        if DETECT_EVERY > 1 and i % DETECT_EVERY != 0:
+            continue
         bar = m15.iloc[i]
         p = float(bar['close'])
         dt = bar.name
@@ -301,6 +306,27 @@ def run(m15, h1, h4, session_filter=True):
             # ⑤ 时段
             if session_filter and (hour_cst < SESSION_START or hour_cst > SESSION_END): continue
 
+            # 确认K线: 形态后第二根同向K线(看多=阳线, 看空=阴线)确认才进场,
+            # 入场价=确认bar收盘价, SL/TP按确认价重算
+            if CONFIRM_BAR:
+                if i + 1 >= len(m15):
+                    continue
+                cb = m15.iloc[i + 1]
+                c_open, c_close = float(cb['open']), float(cb['close'])
+                if (not is_sell and c_close <= c_open) or (is_sell and c_close >= c_open):
+                    continue
+                p = c_close
+                dt = cb.name
+                h4b = h4[h4.index <= dt]
+                if len(h4b) == 0:
+                    continue
+                h4_atr = float(h4b.iloc[-1].get('ATR', 0))
+                if h4_atr == 0:
+                    continue
+                hour_cst = (dt.hour + 8) % 24
+                if session_filter and (hour_cst < SESSION_START or hour_cst > SESSION_END):
+                    continue
+
             # ⑥ SL/TP: ATR止损 + 固定TP
             sl_usd = round(h4_atr * SL_ATR_MULT, 2)
             if TP_USD / sl_usd < 1.0: continue  # RR≥1.0
@@ -320,12 +346,14 @@ def run(m15, h1, h4, session_filter=True):
                 if len(active_until) >= MAX_POS:
                     continue
 
+            # 确认K线模式下入场在 i+1 收盘 → 结算从 i+2 起(确认bar高低点发生在入场前)
+            settle_i = i + 1 if CONFIRM_BAR else i
             if EXIT_REV_TF:
                 oc, pnl, exit_t = sim_reversal_exit(
-                    m15, tf_map, i, direction, p, sl, tp,
+                    m15, tf_map, settle_i, direction, p, sl, tp,
                     rev_tfs, EXIT_REV_MIN_USD, EXIT_REV_CONFIRM, MAX_BARS)
             else:
-                oc, pnl, exit_t = sim_basic(m15, i, direction, p, sl, tp, MAX_BARS)
+                oc, pnl, exit_t = sim_basic(m15, settle_i, direction, p, sl, tp, MAX_BARS)
             if MAX_POS > 0:
                 active_until.append(exit_t)
 
@@ -368,6 +396,8 @@ if __name__ == "__main__":
         if a.startswith("--dedup="): DEDUP_PIPS = float(a.split("=")[1])
         if a.startswith("--flat="): FLAT_RANGE = float(a.split("=")[1])
         if a.startswith("--maxpos="): MAX_POS = int(a.split("=")[1])  # 在途单量上限
+        if a.startswith("--confirm-bar="): CONFIRM_BAR = int(a.split("=")[1])  # 确认K线
+        if a.startswith("--detect-every="): DETECT_EVERY = int(a.split("=")[1])  # 检测频率
         if a.startswith("--session="):
             _s = a.split("=")[1].split(",")
             SESSION_START, SESSION_END = int(_s[0]), int(_s[1])

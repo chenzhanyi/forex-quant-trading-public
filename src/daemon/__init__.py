@@ -24,8 +24,10 @@ daemon = DaemonEngine()
 gold = GoldEngine()
 aud = AudEngine()
 
-# 统一调度间隔: 与 EURUSD 原信号循环一致(15分钟)
-UNIFIED_INTERVAL = 15 * 60
+# 调度间隔: 数据刷新15分钟(API限额); 信号评估5分钟(回测证实:
+# 15分钟轮询使确认K线模式损失2/3收益, 5分钟等效逐bar回测收益翻3倍)
+UNIFIED_INTERVAL = 15 * 60   # 数据刷新
+EVAL_INTERVAL = 5 * 60       # 信号评估
 
 
 def start_daemon():
@@ -34,23 +36,24 @@ def start_daemon():
     logger.info("✅ 守护进程已启动")
 
 
-def unified_tick():
-    """一次统一评估: 先拉取三品种最新数据, 再依次评估三引擎(下单/平仓/反转)
+def unified_tick(refresh: bool = False):
+    """一次统一评估: (refresh=True时)先拉取三品种最新数据, 再依次评估三引擎
 
-    顺序保证: 所有引擎的评估都基于本轮刚刷新的同一批数据。
+    顺序保证: 所有引擎的评估都基于同一批数据。
     """
     daemon._last_unified_tick = datetime.now(timezone.utc)
-    # ① 统一拉取三品种最新数据(OANDA主 + TwelveData备)
-    try:
-        daemon._refresh_market_data()  # EUR/USD (含重试/fallback/面板状态回写)
-    except Exception as e:
-        logger.warning(f"EURUSD 数据刷新失败: {str(e)[:60]}")
-    from src.data_collection.market_data import refresh_symbol_data
-    for sym, tag in [("XAU_USD", "黄金"), ("AUD_USD", "澳元")]:
+    # ① 统一拉取三品种最新数据(OANDA主 + TwelveData备) — 15分钟一次
+    if refresh:
         try:
-            refresh_symbol_data(sym)
+            daemon._refresh_market_data()  # EUR/USD (含重试/fallback/面板状态回写)
         except Exception as e:
-            logger.warning(f"{tag} 数据刷新失败: {str(e)[:60]}")
+            logger.warning(f"EURUSD 数据刷新失败: {str(e)[:60]}")
+        from src.data_collection.market_data import refresh_symbol_data
+        for sym, tag in [("XAU_USD", "黄金"), ("AUD_USD", "澳元")]:
+            try:
+                refresh_symbol_data(sym)
+            except Exception as e:
+                logger.warning(f"{tag} 数据刷新失败: {str(e)[:60]}")
 
     # ② 按最新数据依次评估: 结算/反转出场 → 信号检测 → 下单
     try:
@@ -71,18 +74,28 @@ def unified_tick():
 
 
 def start_unified_scheduler():
-    """统一信号调度线程: 每15分钟 拉数据 → 三引擎依次评估"""
+    """统一调度线程: 数据刷新15分钟 / 信号评估5分钟(回测: 5分钟检测收益翻3倍)
+
+    评估间隔5分钟: M15数据15分钟才更新一根 — 同一bar会被评估2~3次,
+    三引擎已加"同一bar时间戳只处理一次"防重复下单。
+    """
     logger.info(
-        f"🔄 统一信号调度启动: 每 {UNIFIED_INTERVAL // 60} 分钟 "
-        f"拉取 EURUSD/黄金/澳元 最新数据 → 依次评估(下单/平仓/反转)"
+        f"🔄 统一信号调度启动: 数据刷新每 {UNIFIED_INTERVAL // 60} 分钟, "
+        f"信号评估每 {EVAL_INTERVAL // 60} 分钟 "
+        f"(EURUSD/黄金/澳元 依次评估: 下单/平仓/反转)"
     )
     def _loop():
-        unified_tick()  # 启动即跑一次
+        unified_tick(refresh=True)  # 启动即刷新+评估
+        last_refresh = time.time()
         while True:
-            for _ in range(UNIFIED_INTERVAL // 10):
+            for _ in range(EVAL_INTERVAL // 10):
                 time.sleep(10)
             try:
-                unified_tick()
+                if time.time() - last_refresh >= UNIFIED_INTERVAL:
+                    unified_tick(refresh=True)
+                    last_refresh = time.time()
+                else:
+                    unified_tick(refresh=False)  # 仅评估(用最新本地数据)
             except Exception as e:
                 logger.error(f"统一调度异常: {e}")
 

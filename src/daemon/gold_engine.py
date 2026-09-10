@@ -45,6 +45,7 @@ class GoldEngine:
         self._last_eval = None  # 最近一次评估摘要(供总览卡片)
         # MT4同步两轮确认: relay缓存clear与上报间的空窗口不得误判平仓
         self._mt4_missing = {}  # {ticket: 首次缺失时间}
+        self._last_eval_bar = None  # 上次处理信号的M15 bar时间(5分钟评估防重复)
         # 熔断状态: 同方向连续止损 N 次 → 暂停该方向(回测75天: 熔断2连SL 收益翻倍 49%→71%)
         self._fuse = {
             "loss_streak": {"SELL": 0, "BUY": 0},
@@ -220,6 +221,18 @@ class GoldEngine:
         # MT4 实际持仓同步: 手动平仓/EA执行差异 → 修正本地在途订单
         self._sync_mt4_positions(detector)
 
+        # 同bar防重: 5分钟评估间隔下, 同一根M15会被评估2~3次 —
+        # 同一bar只生成一次信号(结算/同步不受影响, 照常每轮执行)
+        try:
+            m15_df = detector._prepare_m15()
+            cur_bar = m15_df.index[-1] if m15_df is not None and len(m15_df) else None
+        except Exception:
+            cur_bar = None
+        if cur_bar is not None and cur_bar == self._last_eval_bar:
+            return {"enabled": self.enabled, "signal": None, "skipped": "same_bar",
+                    "open": len(self._open_trades), "eval": self._eval_count}
+        self._last_eval_bar = cur_bar
+
         if not self.enabled:
             self._set_last_eval("未启用", self._eval_trend(detector))
             return {"enabled": False, "eval": self._eval_count}
@@ -254,7 +267,12 @@ class GoldEngine:
         # 单量限制 — 本地 + MT4 实时持仓双口径核对(防本地计数失真→超限下单)
         no_ticket_local = [t for t in self._open_trades if not t.get("ticket")]
         mt4_count = self._mt4_symbol_count()
-        total_open = mt4_count + len(no_ticket_local)
+        if mt4_count is None:
+            # relay 查询失败(Cloudflare 403等) → 本地在途全数兜底(保守, 防超限)
+            total_open = len(self._open_trades)
+            logger.debug(f"🥇 MT4持仓查询失败, 限单用本地在途数兜底: {total_open}")
+        else:
+            total_open = mt4_count + len(no_ticket_local)
         if total_open >= self.max_open:
             logger.info(f"🥇 单量已达上限(本地{len(no_ticket_local)}+MT4{mt4_count}≥{self.max_open})，跳过新信号")
             d = "做空" if sig.direction == "SELL" else "做多"
@@ -423,11 +441,12 @@ class GoldEngine:
             if not url or not cfg.get("enabled", False):
                 return
             import httpx
+            from src.execution.mt4_remote import relay_headers
             resp = httpx.post(f"{url}/modify", json={
                 "ticket": int(t["ticket"]),
                 "sl": round(t["sl"], 2),
                 "tp": round(t["tp"], 2),
-            }, timeout=15)
+            }, timeout=15, headers=relay_headers())
             logger.info(f"🥇 MT4保本修改: {resp.json().get('success')}")
         except Exception as e:
             logger.warning(f"MT4保本修改失败(可手动改SL): {e}")
@@ -451,24 +470,25 @@ class GoldEngine:
         subprocess.run(["bash", str(push_script), msg],
                        capture_output=True, text=True, timeout=30)
 
-    def _mt4_symbol_count(self) -> int:
-        """relay 实时查询 MT4 上 XAUUSD 持仓总数(限单核对用, 失败返回0)"""
+    def _mt4_symbol_count(self):
+        """relay 实时查询 MT4 上 XAUUSD 持仓总数 — 成功返回计数(可为0),
+        查询失败返回 None(调用方用本地在途数兜底, 防 Cloudflare 403 时超限下单)"""
         try:
             from src.utils.dashboard_settings import load
             cfg = load().get("mt4_relay", {})
             url = cfg.get("url", "").rstrip("/")
             if not url or not cfg.get("enabled", False):
-                return 0
+                return None
             import httpx
-            resp = httpx.get(f"{url}/positions", timeout=5)
+            resp = httpx.get(f"{url}/positions", timeout=5, headers=relay_headers())
             if resp.status_code != 200:
-                return 0
+                return None
             return sum(
                 1 for p in resp.json().get("positions", [])
                 if str(p.get("symbol", "")).upper() == "XAUUSD"
             )
         except Exception:
-            return 0
+            return None
 
     def _sync_mt4_positions(self, detector=None) -> None:
         """从 relay 拉 MT4 实际持仓, 修正本地在途订单
@@ -484,7 +504,7 @@ class GoldEngine:
             if not url or not cfg.get("enabled", False):
                 return
             import httpx
-            resp = httpx.get(f"{url}/positions", timeout=5)
+            resp = httpx.get(f"{url}/positions", timeout=5, headers=relay_headers())
             if resp.status_code != 200:
                 return
             mt4 = [p for p in resp.json().get("positions", [])
@@ -573,7 +593,7 @@ class GoldEngine:
                 "sl": round(sig.stop_loss, 2),
                 "tp": round(sig.take_profit, 2),
                 "comment": "gold_auto",
-            }, timeout=15)
+            }, timeout=15, headers=relay_headers())
             result = resp.json()
             if result.get("success"):
                 logger.info(f"🥇 MT4黄金下单成功: {result.get('order_id')}")

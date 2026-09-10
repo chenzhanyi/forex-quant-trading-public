@@ -57,6 +57,14 @@ SL_TIGHT_MULT = 1.5   # 降级单的 ATR 止损倍数
 # 同方向最大同时持仓(0=不限) — 模拟实盘限单机制, 超限信号跳过 (见 --maxpos)
 MAX_POS = 0
 
+# 确认K线(--confirm-bar=1): 形态出现后的第二根同向K线确认后才进场 —
+# 看多需第二根阳线(close>open), 看空需第二根阴线; 入场价=确认bar收盘价
+CONFIRM_BAR = 0
+
+# 检测频率(--detect-every=N): 每N根M15检测一次 — 模拟实盘轮询间隔
+# 1=逐bar(等效5分钟级实时检测/收盘即检) 3=每3根(等效15分钟轮询)
+DETECT_EVERY = 1
+
 # 结算窗口(M15根数): 实盘持仓不限时长, 持有到 SL/TP/反转触发 —
 # 窗口过短会把"仍在持仓的单"按截断收盘价结算, 与实盘结果偏差大(低波动品种尤其)
 # 默认192(48h)保持历史口径; 建议长窗口回测用 --maxbars=960(10天)/1920(20天)
@@ -305,6 +313,9 @@ def run(m15, h1, h4, session_filter=True):
     active_until = {"SELL": [], "BUY": []}  # 各方向在持仓的平仓时间(限单模拟)
 
     for i in range(20, len(m15)):
+        # 检测频率模拟: 每DETECT_EVERY根检测一次(实盘轮询间隔的离散化)
+        if DETECT_EVERY > 1 and i % DETECT_EVERY != 0:
+            continue
         bar = m15.iloc[i]; p = float(bar['close']); dt = bar.name
 
         h4b = h4[h4.index <= dt]
@@ -342,9 +353,63 @@ def run(m15, h1, h4, session_filter=True):
                         continue
                     paused_until[direction] = None
                     loss_streak[direction] = 0
+            # 确认K线模式: 形态在 bar i-1 及以前、bar i 同向确认(多=阳/空=阴)才进场
+            # 评估时点 = bar i 收盘后(与实盘检测器一致: 倒数第二根形态+最后根确认);
+            # SMA/EMA/RSI 用形态bar(i-1); 入场价/SL/TP/时段用确认bar(i);
+            # DETECT_EVERY=3 时 i 仅取3的倍数 = 15分钟轮询模拟
+            skip_std = False
+            if CONFIRM_BAR:
+                if i < 1:
+                    continue
+                cbar = m15.iloc[i]          # 确认bar = 评估时点最后一根已收盘
+                sig_bar = m15.iloc[i - 1]   # 形态bar = 倒数第二根
+                c_open, c_close = float(cbar['open']), float(cbar['close'])
+                if (not is_sell and c_close <= c_open) or (is_sell and c_close >= c_open):
+                    continue  # 确认bar不是同向K线 → 信号作废
+                # 形态检测(窗口 i-6..i-1, 末根=i-1)
+                w2 = m15.iloc[max(0, i - 6):i]
+                pat = False
+                if is_sell:
+                    pat = (ind.is_bearish_reversal(w2) or ind.is_evening_star(w2) or
+                           ind.is_bearish_harami(w2) or ind.is_decisive_bearish(w2))
+                    if not pat and len(w2) >= 2:
+                        pv, ls = w2.iloc[-2], w2.iloc[-1]
+                        pat = (float(ls['close']) < float(ls['open']) and
+                               float(pv['close']) > float(pv['open']) and
+                               float(ls['close']) < float(pv['open']))
+                else:
+                    pat = (ind.is_bullish_reversal(w2) or ind.is_morning_star(w2) or
+                           ind.is_bullish_harami(w2) or ind.is_decisive_bullish(w2))
+                    if not pat and len(w2) >= 2:
+                        pv, ls = w2.iloc[-2], w2.iloc[-1]
+                        pat = (float(ls['close']) > float(ls['open']) and
+                               float(pv['close']) < float(pv['open']) and
+                               float(ls['close']) > float(pv['open']))
+                if not pat:
+                    continue
+                # 趋势/EMA/RSI(形态bar值, 与实盘一致)
+                if is_sell and float(sig_bar['close']) >= h4_sma: continue
+                if not is_sell and float(sig_bar['close']) <= h4_sma: continue
+                e5 = float(sig_bar['EMA5']); e15 = float(sig_bar['EMA15'])
+                if is_sell and e5 >= e15: continue
+                if not is_sell and e5 <= e15: continue
+                rsi = float(sig_bar.get('RSI14', 50))
+                if rsi < RSI_LO or rsi > RSI_HI: continue
+                # 时段(确认bar)
+                hour_cst = (dt.hour + 8) % 24
+                if session_filter and not _in_session(hour_cst, SESSION_START, SESSION_END):
+                    continue
+                # 更新入场价/ATR(确认bar)
+                p = c_close
+                h4b = h4[h4.index <= dt]
+                h4_atr = float(h4b.iloc[-1].get('ATR', 0))
+                if not (h4_atr > 0):
+                    continue
+                skip_std = True  # 五项标准检查已在确认块完成, 跳过下方同款检查
+
             # 趋势过滤
-            if is_sell and p >= h4_sma: continue
-            if not is_sell and p <= h4_sma: continue
+            if not skip_std and is_sell and p >= h4_sma: continue
+            if not skip_std and not is_sell and p <= h4_sma: continue
 
             # 趋势质量: 结构确认 + H1哨兵 — 默认拦截; --degrade 模式下降级放行
             # (H4说多但H1已转空 / 均线向上但低点结构破坏 = 下跌初段典型特征)
@@ -380,38 +445,39 @@ def run(m15, h1, h4, session_filter=True):
                    abs(p - prev[1]) * PIP_SCALE < DEDUP_PIPS:
                     continue
 
-            # EMA
-            if is_sell and e5 >= e15: continue
-            if not is_sell and e5 <= e15: continue
+            # EMA (确认模式已用形态bar判定, 跳过)
+            if not skip_std and is_sell and e5 >= e15: continue
+            if not skip_std and not is_sell and e5 <= e15: continue
 
             # K线形态 — 与实盘 entry.py _detect_any_* 完全一致(含宽松吞没分支)
-            w = m15.iloc[max(0,i-5):i+1]
-            if is_sell:
-                pat = (ind.is_bearish_reversal(w) or ind.is_evening_star(w) or
-                       ind.is_bearish_harami(w) or ind.is_decisive_bearish(w))
-                if not pat and len(w) >= 2:
-                    # 宽松"阴吞阳": 阴线 + prev阳线 + 收盘破prev开盘(实盘 entry.py 同款)
-                    pv, ls = w.iloc[-2], w.iloc[-1]
-                    pat = (float(ls['close']) < float(ls['open']) and
-                           float(pv['close']) > float(pv['open']) and
-                           float(ls['close']) < float(pv['open']))
-                if not pat: continue
-            else:
-                pat = (ind.is_bullish_reversal(w) or ind.is_morning_star(w) or
-                       ind.is_bullish_harami(w) or ind.is_decisive_bullish(w))
-                if not pat and len(w) >= 2:
-                    # 宽松"阳吞阴": 阳线 + prev阴线 + 收盘破prev开盘(实盘 entry.py 同款)
-                    pv, ls = w.iloc[-2], w.iloc[-1]
-                    pat = (float(ls['close']) > float(ls['open']) and
-                           float(pv['close']) < float(pv['open']) and
-                           float(ls['close']) > float(pv['open']))
-                if not pat: continue
+            if not skip_std:
+                w = m15.iloc[max(0,i-5):i+1]
+                if is_sell:
+                    pat = (ind.is_bearish_reversal(w) or ind.is_evening_star(w) or
+                           ind.is_bearish_harami(w) or ind.is_decisive_bearish(w))
+                    if not pat and len(w) >= 2:
+                        # 宽松"阴吞阳": 阴线 + prev阳线 + 收盘破prev开盘(实盘 entry.py 同款)
+                        pv, ls = w.iloc[-2], w.iloc[-1]
+                        pat = (float(ls['close']) < float(ls['open']) and
+                               float(pv['close']) > float(pv['open']) and
+                               float(ls['close']) < float(pv['open']))
+                    if not pat: continue
+                else:
+                    pat = (ind.is_bullish_reversal(w) or ind.is_morning_star(w) or
+                           ind.is_bullish_harami(w) or ind.is_decisive_bullish(w))
+                    if not pat and len(w) >= 2:
+                        # 宽松"阳吞阴": 阳线 + prev阴线 + 收盘破prev开盘(实盘 entry.py 同款)
+                        pv, ls = w.iloc[-2], w.iloc[-1]
+                        pat = (float(ls['close']) > float(ls['open']) and
+                               float(pv['close']) < float(pv['open']) and
+                               float(ls['close']) > float(pv['open']))
+                    if not pat: continue
 
             # RSI
-            if rsi < RSI_LO or rsi > RSI_HI: continue
+            if not skip_std and (rsi < RSI_LO or rsi > RSI_HI): continue
 
             # 时段
-            if session_filter and not _in_session(hour_cst, SESSION_START, SESSION_END): continue
+            if not skip_std and session_filter and not _in_session(hour_cst, SESSION_START, SESSION_END): continue
 
             # SL/TP (降级单: tight_sl/both 模式收紧止损)
             sl_mult = SL_ATR_MULT
@@ -438,18 +504,20 @@ def run(m15, h1, h4, session_filter=True):
                 last_entry[direction] = (dt, p)
 
             # 结果（反转出场 / 简单锁利追踪 / 固定止盈）— 均返回 (oc, pip, exit_time)
+            # 确认K线模式下入场在 bar i 收盘 → 结算从 i+1 起(确认bar高低点发生在入场前)
+            settle_i = i
             if EXIT_REV_TF:
                 oc, pip, exit_t = sim_reversal_exit(
-                    m15, tf_map, i, direction, p, sl, tp,
+                    m15, tf_map, settle_i, direction, p, sl, tp,
                     rev_tfs, EXIT_REV_MIN_PROFIT, EXIT_REV_CONFIRM, max_bars=SETTLE_BARS)
                 resolved = oc != "OPEN"
             elif TRAIL_TRIGGER > 0:
                 oc, pip, exit_t = sim_simple_trail(
-                    m15, i, direction, p, sl, tp,
+                    m15, settle_i, direction, p, sl, tp,
                     TRAIL_TRIGGER, LOCK_PIPS, TP_MULT, TRAIL_BARS)
                 resolved = oc in ("SL", "TP")
             else:
-                after = m15.iloc[i+1:i+1+SETTLE_BARS]
+                after = m15.iloc[settle_i+1:settle_i+1+SETTLE_BARS]
                 if len(after) < 50: continue
                 # 逐bar模拟: SL 先判(与实盘同规则), 记录平仓时间
                 oc, exit_t = "OPEN", after.index[-1]
@@ -536,6 +604,8 @@ if __name__ == "__main__":
         if a.startswith("--h1guard="): H1_GUARD = int(a.split("=")[1])         # H1 200SMA哨兵
         if a.startswith("--degrade="): DEGRADE_MODE = a.split("=")[1]          # 降级: half_lot/tight_sl/both
         if a.startswith("--maxpos="): MAX_POS = int(a.split("=")[1])           # 同方向持仓上限(0=不限)
+        if a.startswith("--confirm-bar="): CONFIRM_BAR = int(a.split("=")[1])  # 确认K线
+        if a.startswith("--detect-every="): DETECT_EVERY = int(a.split("=")[1])  # 检测频率
         if a.startswith("--symbol="): BACKTEST_SYMBOL = a.split("=")[1].upper()  # 回测品种
     if BACKTEST_SYMBOL and BACKTEST_SYMBOL.endswith("JPY"):
         PIP_SCALE = 100  # JPY 类品种 1 pip = 0.01

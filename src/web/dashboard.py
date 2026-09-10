@@ -534,7 +534,8 @@ def api_settings_mt4_test():
     # HTTP 测试
     try:
         import httpx
-        resp = httpx.get(f"{url}/health", timeout=5)
+        from src.execution.mt4_remote import relay_headers
+        resp = httpx.get(f"{url}/health", timeout=5, headers=relay_headers())
         if resp.status_code == 200:
             data = resp.json()
             result["http"] = True

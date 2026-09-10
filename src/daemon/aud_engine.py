@@ -57,6 +57,7 @@ class AudEngine:
         # MT4同步两轮确认: relay /positions 是EA上报缓存, clear与上报之间存在
         # 空窗口期 — 单轮"查不到ticket"可能是瞬时空白, 不得立即判平仓(误判→超限下单)
         self._mt4_missing = {}  # {ticket: 首次缺失时间}
+        self._last_eval_bar = None  # 上次处理信号的M15 bar时间(5分钟评估防重复)
         self._load_state()
 
     # ── 状态持久化 ──
@@ -253,6 +254,18 @@ class AudEngine:
         # MT4 实际持仓同步: 手动平仓/EA执行差异 → 修正本地在途订单
         self._sync_mt4_positions(detector)
 
+        # 同bar防重: 5分钟评估间隔下, 同一根M15会被评估2~3次 —
+        # 同一bar只生成一次信号(结算/同步不受影响, 照常每轮执行)
+        try:
+            m15_df = detector._prepare_m15()
+            cur_bar = m15_df.index[-1] if m15_df is not None and len(m15_df) else None
+        except Exception:
+            cur_bar = None
+        if cur_bar is not None and cur_bar == self._last_eval_bar:
+            return {"enabled": self.enabled, "signal": None, "skipped": "same_bar",
+                    "open": len(self._open_trades), "eval": self._eval_count}
+        self._last_eval_bar = cur_bar
+
         if not self.enabled:
             self._set_last_eval("未启用", self._eval_trend(detector))
             return {"enabled": False, "eval": self._eval_count}
@@ -298,7 +311,12 @@ class AudEngine:
         same_dir = [t for t in self._open_trades if t["direction"] == sig.direction]
         no_ticket_local = [t for t in same_dir if not t.get("ticket")]
         mt4_same = self._mt4_same_dir_count(sig.direction)
-        total_same = mt4_same + len(no_ticket_local)
+        if mt4_same is None:
+            # relay 查询失败(Cloudflare 403等) → 本地在途全数兜底(保守, 防超限)
+            total_same = len(self._open_trades)
+            logger.debug(f"🦘 MT4持仓查询失败, 限单用本地在途数兜底: {total_same}")
+        else:
+            total_same = mt4_same + len(no_ticket_local)
         if total_same >= self.max_open:
             logger.info(f"🦘 同方向单量已达上限(本地{len(no_ticket_local)}+MT4{mt4_same}≥{self.max_open})，跳过新信号")
             d = "做空" if sig.direction == "SELL" else "做多"
@@ -437,18 +455,20 @@ class AudEngine:
 
     # ── MT4 / 推送 / 日志 ──
 
-    def _mt4_same_dir_count(self, direction: str) -> int:
-        """relay 实时查询 MT4 上本品种同向持仓数(限单核对用, 失败返回0)"""
+    def _mt4_same_dir_count(self, direction: str):
+        """relay 实时查询 MT4 上本品种同向持仓数 — 成功返回计数(可为0),
+        查询失败返回 None(调用方用本地在途数兜底, 防 Cloudflare 403 时超限下单)"""
         try:
             from src.utils.dashboard_settings import load
             cfg = load().get("mt4_relay", {})
             url = cfg.get("url", "").rstrip("/")
             if not url or not cfg.get("enabled", False):
-                return 0
+                return None
             import httpx
-            resp = httpx.get(f"{url}/positions", timeout=5)
+            from src.execution.mt4_remote import relay_headers
+            resp = httpx.get(f"{url}/positions", timeout=5, headers=relay_headers())
             if resp.status_code != 200:
-                return 0
+                return None
             mt4_type = direction  # MT4 type 字段: BUY/SELL
             return sum(
                 1 for p in resp.json().get("positions", [])
@@ -456,7 +476,7 @@ class AudEngine:
                 and p.get("type") == mt4_type
             )
         except Exception:
-            return 0
+            return None
 
     def _sync_mt4_positions(self, detector=None) -> None:
         """从 relay 拉 MT4 实际持仓, 修正本地在途订单
@@ -472,7 +492,7 @@ class AudEngine:
             if not url or not cfg.get("enabled", False):
                 return
             import httpx
-            resp = httpx.get(f"{url}/positions", timeout=5)
+            resp = httpx.get(f"{url}/positions", timeout=5, headers=relay_headers())
             if resp.status_code != 200:
                 return
             mt4 = [p for p in resp.json().get("positions", [])
@@ -564,7 +584,7 @@ class AudEngine:
                 "sl_pips": sig.sl_pips,
                 "tp_pips": sig.tp_pips,
                 "comment": "aud_auto",
-            }, timeout=15)
+            }, timeout=15, headers=relay_headers())
             result = resp.json()
             if result.get("success"):
                 logger.info(f"🦘 MT4澳元下单成功: {result.get('order_id')}")

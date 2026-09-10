@@ -26,6 +26,25 @@ from src.utils.config_loader import config
 logger = logging.getLogger(__name__)
 
 
+def relay_token() -> str:
+    """relay 认证 token(中控台 mt4_relay.token, 与 VPS 环境变量/EA 一致)"""
+    try:
+        from src.utils.dashboard_settings import load
+        tok = (load().get("mt4_relay") or {}).get("token", "")
+        if not tok:
+            logger.warning("⚠️ mt4_relay.token 未配置 — relay v4 部署后所有 MT4 请求将被 401 拒绝")
+        return tok
+    except Exception:
+        logger.warning("⚠️ relay token 读取失败 — relay v4 部署后 MT4 请求将 401")
+        return ""
+
+
+def relay_headers() -> dict:
+    """relay 请求认证头 — 所有到 relay 的 httpx 请求统一携带"""
+    tok = relay_token()
+    return {"X-Auth-Token": tok} if tok else {}
+
+
 class MT4Remote:
     """MT4 远程交易客户端"""
 
@@ -63,7 +82,8 @@ class MT4Remote:
         if not self.enabled:
             return None
         try:
-            resp = httpx.get(f"{self.url}/quote?symbol={symbol}", timeout=5)
+            resp = httpx.get(f"{self.url}/quote?symbol={symbol}", timeout=5,
+                             headers=relay_headers())
             d = resp.json()
             if d.get("success") and d.get("bid"):
                 return d
@@ -76,7 +96,8 @@ class MT4Remote:
         if not self.enabled:
             return {"success": False, "error": "MT4远程交易未启用"}
         try:
-            resp = httpx.get(f"{self.url}/health", timeout=5)
+            resp = httpx.get(f"{self.url}/health", timeout=5,
+                             headers=relay_headers())
             return resp.json()
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -90,6 +111,7 @@ class MT4Remote:
                 f"{self.url}/close",
                 json={"symbol": symbol, "direction": direction},
                 timeout=15,
+                headers=relay_headers(),
             )
             result = resp.json()
             if result.get("success"):
@@ -128,6 +150,7 @@ class MT4Remote:
                 f"{self.url}/order",
                 json=payload,
                 timeout=15,
+                headers=relay_headers(),
             )
             result = resp.json()
             # 双保险: 即使旧版 relay 对 EA 执行失败也返回 success=True,

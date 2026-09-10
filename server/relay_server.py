@@ -1,10 +1,11 @@
-"""MT4 交易中继服务器 v3 — 干净版
+"""MT4 交易中继服务器 v4 — token 认证
 
 Mac ──HTTP──→ VPS (本服务) ──轮询──→ MT4 EA
 
-启动: python3 relay_server.py --host 0.0.0.0 --port 8080
+启动: RELAY_TOKEN=xxx python3 relay_server.py --host 0.0.0.0 --port 8080
+认证: 所有接口(除/health)要求 token — 请求头 X-Auth-Token / URL ?token= / Cookie relay_token
 """
-import json, logging, threading, time
+import json, logging, os, threading, time
 from datetime import datetime
 from flask import Flask, request, jsonify
 
@@ -12,6 +13,22 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [relay] %(message)s"
 logger = logging.getLogger("relay")
 
 app = Flask(__name__)
+
+# 认证 token — 环境变量 RELAY_TOKEN 优先, 默认值须与 Mac端/EA端一致
+RELAY_TOKEN = os.environ.get("RELAY_TOKEN", "你的RELAY_TOKEN_请用环境变量配置")
+
+
+@app.before_request
+def _check_token():
+    """统一 token 校验(除 /health 探活)"""
+    if request.path == "/health":
+        return None
+    tok = (request.headers.get("X-Auth-Token")
+           or request.args.get("token")
+           or request.cookies.get("relay_token"))
+    if tok != RELAY_TOKEN:
+        return jsonify({"success": False, "error": "unauthorized"}), 401
+    return None
 
 # ── 状态 ──
 ea_positions = {}       # {ticket: {...}} EA 上报的最新持仓

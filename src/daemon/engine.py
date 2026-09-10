@@ -79,10 +79,33 @@ class DaemonEngine:
             "paused_until": {"SELL": None, "BUY": None},
         }
         self._load_fuse()
+        self._last_eval_bar = None  # 上次处理信号的M15 bar时间(5分钟评估防重复)
 
     def evaluate_signal(self) -> dict:
         """生成一次信号并记录"""
         try:
+            # 同bar防重: 5分钟评估间隔下, 同一根M15会被评估2~3次 —
+            # 同一bar只生成一次信号(持仓检查/同步照常, 在下方执行)
+            from src.data_collection.oanda import OandaClient
+            try:
+                m15_df = OandaClient().load_parquet("M15")
+                cur_bar = m15_df.index[-1] if not m15_df.empty else None
+            except Exception:
+                cur_bar = None
+            if cur_bar is not None and cur_bar == self._last_eval_bar:
+                # 跳过信号生成, 但持仓检查/MT4同步仍需执行(直接走后半段)
+                self._eval_count += 1
+                # 触发熔断到期检查(信号生成时才检查, same_bar轮次也保证到期解除)
+                for _d in ("SELL", "BUY"):
+                    if self._fuse["paused_until"].get(_d):
+                        self._eurusd_fused(_d)
+                self._maybe_check_positions()
+                self._maybe_push_position_reminder()
+                self._check_vps_health()
+                self._sync_mt4_positions()
+                return {"skipped": "same_bar"}
+            self._last_eval_bar = cur_bar
+
             sig = self.generator.generate()
 
             # 熔断检查(在记录/保存之前): 同方向连续止损暂停期 → 转观察
@@ -121,16 +144,9 @@ class DaemonEngine:
                 "entry_reason": sig.entry_reason if sig.can_trade else "",
             }
 
-            # 记录到历史
-            self.history.record(signal_data)
-
-            # 保存信号文件
-            self.generator.save(sig)
-
-            self._eval_count += 1
-            logger.info(f"📊 信号 #{self._eval_count}: {sig.direction}")
-
-            # 🚀 可交易信号 → 立即飞书推送 + 记录持仓 + MT4自动下单
+            # 🚀 可交易信号 → 先过限单检查, 再记录历史
+            # (回测语义: last_entry/dedup 基准只记"通过限单检查"的信号 —
+            #  被限单拦的信号 can_trade 置 False, 不污染 48h 去重基准)
             if sig.can_trade:
                 direction = "SELL" if "做空" in sig.direction else "BUY"
 
@@ -141,6 +157,28 @@ class DaemonEngine:
                     self._handle_trade_execution(sig, direction)
                     if pushed:
                         self._signal_stack.append({"ts": time.time(), "direction": direction})
+                else:
+                    # 限单拦截: 转不可交易(对齐回测 — 不占去重基准、不入交易信号)
+                    sig.can_trade = False
+                    sig.skip_reason = sig.skip_reason or (
+                        f"同方向已达上限({self._max_same_dir()}单), 转趋势延续提示"
+                    )
+                    signal_data.update({
+                        "can_trade": False,
+                        "entry_price": None, "stop_loss": None,
+                        "tp1": None, "tp2": None,
+                        "rr_ratio": None, "lots": None, "max_loss": None,
+                        "skip_reason": sig.skip_reason,
+                    })
+
+            # 记录到历史(限单拦截后的最终状态)
+            self.history.record(signal_data)
+
+            # 保存信号文件
+            self.generator.save(sig)
+
+            self._eval_count += 1
+            logger.info(f"📊 信号 #{self._eval_count}: {sig.direction}")
 
             # 🔍 检测活跃持仓是否接近 TP → 推送调整建议
             self._maybe_check_positions()
@@ -519,11 +557,13 @@ class DaemonEngine:
         try:
             from src.strategy.position_manager import PositionManager
             pm = PositionManager()
-            existing = pm.get_active(direction)
-            if existing:
+            # 回测语义: 同方向在途持仓数上限(默认3), 未满允许顺势加仓
+            # (此前"已有同向持仓即跳过"= 同方向永远1单 — 推送6次只下1单的根因)
+            same_dir_positions = [p for p in pm.load_all() if p.direction == direction]
+            maxd = self._max_same_dir()
+            if len(same_dir_positions) >= maxd:
                 logger.info(
-                    f"🔒 已有{direction}持仓(入场{existing.entry_price:.5f}), "
-                    f"跳过重复下单"
+                    f"🔒 同方向已有{len(same_dir_positions)}单(上限{maxd}), 跳过下单"
                 )
                 return
 
@@ -712,18 +752,23 @@ class DaemonEngine:
                               if now_ts - e.get("ts", 0) < self._signal_life_span]
 
     def _push_signal_if_slot(self, sig) -> bool:
-        """同向叠加上限检查:
+        """同向叠加上限检查(回测语义: 同方向在途持仓数, 平仓即释放名额):
         有空位 → 返回 True(正常推送/下单; 槽位由调用方在推送成功后占用)
         已达上限 → 只发"趋势延续"提示, 不当作新开仓, 返回 False
         """
         direction = "SELL" if "做空" in sig.direction else "BUY"
-        now_ts = time.time()
-        self._prune_signal_stack(now_ts)
-        active = sum(1 for e in self._signal_stack if e["direction"] == direction)
         maxd = self._max_same_dir()
-        # MT4 实时同向持仓数核对(防本地计数失真→超限下单)
-        mt4_active = self._mt4_same_dir_count(direction)
-        if active >= maxd or mt4_active >= maxd:
+        # 主口径(回测语义): MT4 实时同向持仓数 — 平仓即释放名额
+        mt4_active = self._mt4_same_dir_count_strict(direction)
+        if mt4_active is not None:
+            active = mt4_active
+        else:
+            # 兜底: relay 查询失败(Cloudflare间歇挡等) → 用48h推送数保守计数,
+            # 防止查询失败期间超限下单
+            now_ts = time.time()
+            self._prune_signal_stack(now_ts)
+            active = sum(1 for e in self._signal_stack if e["direction"] == direction)
+        if active >= maxd:
             try:
                 self._push_feishu(
                     f"🌊 趋势延续提示\n"
@@ -732,29 +777,31 @@ class DaemonEngine:
                 )
             except Exception as e:
                 logger.warning(f"延续提示推送失败: {e}")
-            logger.info(f"🌊 同方向已达上限({maxd}单, 本地{active}/MT4{mt4_active}), 转为延续提示不新增")
+            logger.info(f"🌊 同方向已达上限({maxd}单, 在途{active}), 转为延续提示不新增")
             return False
         return True
 
-    def _mt4_same_dir_count(self, direction: str) -> int:
-        """relay 实时查询 MT4 上 EURUSD 同向持仓数(限单核对用, 失败返回0)"""
+    def _mt4_same_dir_count_strict(self, direction: str):
+        """relay 实时查询 MT4 上 EURUSD 同向持仓数 — 成功返回计数(可为0),
+        失败返回 None(调用方用48h推送数兜底, 防查询失败期间超限下单)"""
         try:
             from src.utils.dashboard_settings import load
             cfg = load().get("mt4_relay", {})
             url = cfg.get("url", "").rstrip("/")
             if not url or not cfg.get("enabled", False):
-                return 0
+                return None
             import httpx
-            resp = httpx.get(f"{url}/positions", timeout=5)
+            from src.execution.mt4_remote import relay_headers
+            resp = httpx.get(f"{url}/positions", timeout=5, headers=relay_headers())
             if resp.status_code != 200:
-                return 0
+                return None
             return sum(
                 1 for p in resp.json().get("positions", [])
                 if str(p.get("symbol", "")).upper() in ("EURUSD", "EUR/USD")
                 and p.get("type") == direction
             )
         except Exception:
-            return 0
+            return None
 
     def _maybe_push_signal_alert(self, sig) -> bool:
         """可交易信号实时飞书推送（30分钟冷却 + 方向变化立即推）
@@ -1068,7 +1115,7 @@ class DaemonEngine:
             # HTTP check
             try:
                 import httpx
-                resp = httpx.get(f"{url}/health", timeout=5)
+                resp = httpx.get(f"{url}/health", timeout=5, headers=relay_headers())
                 if resp.status_code == 200:
                     ok = True
                     ea = resp.json().get("ea_connected", False)
@@ -1108,7 +1155,7 @@ class DaemonEngine:
                 return
 
             import httpx
-            resp = httpx.get(f"{url}/positions", timeout=5)
+            resp = httpx.get(f"{url}/positions", timeout=5, headers=relay_headers())
             if resp.status_code != 200:
                 return
             mt4_positions = resp.json().get("positions", [])
