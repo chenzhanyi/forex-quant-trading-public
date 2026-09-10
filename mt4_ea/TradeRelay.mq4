@@ -19,6 +19,7 @@
 #property strict
 
 input string   RelayUrl = "http://你的中继服务器域名:8080";  // 中继服务器域名
+input string   RelayToken = "你的RELAY_TOKEN_请用环境变量配置";  // 认证token(与VPS relay环境变量一致)
 input int      PollSeconds = 5;                     // 轮询间隔(秒)
 input int      Slippage = 30;                       // 滑点(pips)
 input string   TradeComment = "auto";               // 订单注释
@@ -218,7 +219,14 @@ void CheckAndExecute() {
 //+------------------------------------------------------------------+
 // HTTP POST 请求
 //+------------------------------------------------------------------+
+// 统一追加认证 token(URL参数方式 — MQL4 WebRequest 不支持自定义头)
+string AddToken(string url) {
+    if (StringFind(url, "?") >= 0) return url + "&token=" + RelayToken;
+    return url + "?token=" + RelayToken;
+}
+
 void HttpPost(string url, string body) {
+    url = AddToken(url);
     char postData[];
     char resultData[];
     string resultHeaders;
@@ -233,6 +241,7 @@ void HttpPost(string url, string body) {
 // HTTP GET 请求 (MQL4 WebRequest)
 //+------------------------------------------------------------------+
 string HttpGet(string url) {
+    url = AddToken(url);
     string cookie = "";
     int timeout = 5000;
     char postData[1];  // 空数据
