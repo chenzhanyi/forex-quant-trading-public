@@ -11,6 +11,28 @@
     python scripts/backtest_four_step.py --days 30 --tp=80             # 止盈 pips (默认 40)
 
 时段为北京时间小时,支持跨午夜(start>end 表示次日凌晨)。
+
+────────────────────────────────────────────────────────────
+实盘口径回测命令 (复现当前实盘配置, 勿凭默认值跑)
+────────────────────────────────────────────────────────────
+⚠️ 脚本默认值 ≠ 任何品种的实盘配置, 尤其 RSI: 本脚本默认 RSI 30-60
+   开启, 而 EURUSD / 澳元 实盘均无 RSI (aud_entry.py ④ = 关闭)。
+   跑这两个品种必须显式传 --rsi=0,100, 否则会多套一层实盘不存在的过滤器。
+
+  # EURUSD (确认K线 + H1形态双确认, RSI关, 反转出场H1)
+  python3 scripts/backtest_four_step.py --days=170 --symbol=EUR_USD \\
+      --rsi=0,100 --confirm-bar=1 --h1-pattern=1 --fuse=2 --dedup=15 \\
+      --flat=40 --maxpos=3 --exit-rev=H1 --exit-rev-min=5 --detect-every=1
+
+  # 澳元 (方案A + D1双K线参考, 无RSI, 时段8-16)
+  python3 scripts/backtest_four_step.py --days=170 --symbol=AUD_USD \\
+      --rsi=0,100 --dedup=15 --flat=40 --fuse=2 --maxbars=960 --maxpos=3 \\
+      --exit-rev=H1 --exit-rev-min=5 --detect-every=1 \\
+      --tp=35 --slmult=2.0 --session=8,16 --d1-bias=1
+
+  黄金用独立脚本: scripts/backtest_gold.py (RSI 30-60 是其默认且与实盘一致)
+
+跑完务必核对输出首行的 "RSI0-100" / 时段 / 反转出场 等口径是否与预期一致。
 """
 import sys, json, pandas as pd
 sys.path.insert(0, '.')
