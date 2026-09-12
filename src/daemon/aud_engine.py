@@ -451,6 +451,13 @@ class AudEngine:
 
         if changed:
             self._open_trades = new_open
+            # 清理已结算单的 MT4 缺失标记: _mt4_missing 的清理逻辑只在
+            # _sync_mt4_positions 的 "for t in self._open_trades" 循环内,
+            # 本地SL/TP结算掉的 ticket 再也遍历不到 → 键永久残留(缓慢累积)
+            live = {t.get("ticket") for t in new_open}
+            for tk in list(self._mt4_missing):
+                if tk not in live:
+                    self._mt4_missing.pop(tk, None)
             self._save_state()
 
     # ── MT4 / 推送 / 日志 ──
